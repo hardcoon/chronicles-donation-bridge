@@ -16,7 +16,7 @@
     <PublishReadyToRun>false</PublishReadyToRun>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\ChroniclesDonationBridge.ico</ApplicationIcon>
-    <Version>1.6.2</Version>
+    <Version>1.6.3</Version>
   </PropertyGroup>
   <ItemGroup>
     <Using Remove="System.Drawing" />

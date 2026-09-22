@@ -48,6 +48,11 @@ internal static class Program
             Check(panels.Count > 0 && panels[0].InternalColumnCountForTest() == 3, "Automatic grid uses three columns at wide width");
             Check(Descendants<Button>((DependencyObject)window.Content).Count(b => b.Content?.ToString() == "Настроить") == 2, "Both active cards expose Configure");
             Check(Descendants<Expander>((DependencyObject)window.Content).Count() == 0, "No inline expanders remain");
+            Check(Descendants<Button>((DependencyObject)window.Content).Any(button =>
+                    button.Name == "ThemeToggleButton" && button.Content?.ToString() == "Светлая тема") &&
+                  Descendants<CheckBox>((DependencyObject)window.Content).All(checkBox =>
+                    checkBox.Name != "ThemeToggleButton"),
+                "Theme selection is exposed as a button instead of a checkbox");
             var tabs = Descendants<TabControl>((DependencyObject)window.Content).Single();
             Check(tabs.Items.Count == 4, "Active / User presets / Presets / History remain");
             Check(tabs.Items.Cast<TabItem>().Select(TabHeader).SequenceEqual(

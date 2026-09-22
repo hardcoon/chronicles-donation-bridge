@@ -40,6 +40,7 @@ internal static class Program
             ("price preview invalidation and offline errors", UiParityTests.PricePreviewAsync),
             ("rate request is bounded and anonymous", UiParityTests.RateHttpAsync),
             ("file presets require matching installed scripts", FilePresetArchitectureTests.LoadAndInstallVisibilityAsync),
+            ("IX-Ray script load lists stay synchronized", FilePresetArchitectureTests.ScriptLoadListsStaySynchronizedAsync),
             ("malformed and duplicate file presets are isolated", FilePresetArchitectureTests.InvalidFilesAreIsolatedAsync),
             ("add-on installer updates managed files and preserves unknown files", FilePresetArchitectureTests.AddonInstallerAsync),
             ("missing file preset source keeps saved user preset", FilePresetArchitectureTests.MissingSourceKeepsSavedPresetAsync),

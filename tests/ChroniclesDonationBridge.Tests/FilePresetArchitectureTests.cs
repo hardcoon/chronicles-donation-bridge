@@ -54,6 +54,19 @@ internal static class FilePresetArchitectureTests
         return Task.CompletedTask;
     }
 
+    public static Task ScriptLoadListsStaySynchronizedAsync()
+    {
+        var addonInit = ReadScriptModules(Path.Combine(AppContext.BaseDirectory, "addon.contract.init"));
+        var modScript = ReadScriptModules(Path.Combine(
+            AppContext.BaseDirectory,
+            "mod_script_pf_donation_alerts.contract.ltx"));
+        Check(addonInit.SetEquals(modScript),
+            "addon.init and mod_script_pf_donation_alerts.ltx load different Lua modules");
+        Check(addonInit.Contains("pf_donation_action_invulnerability"),
+            "the IX-Ray load lists omit the god-mode action module");
+        return Task.CompletedTask;
+    }
+
     public static async Task AddonInstallerAsync()
     {
         using var fixture = PresetFixture.Create(copyPresetSources: false);
@@ -143,6 +156,19 @@ internal static class FilePresetArchitectureTests
     private static void Check(bool condition, string error)
     {
         if (!condition) throw new InvalidOperationException(error);
+    }
+
+    private static HashSet<string> ReadScriptModules(string path)
+    {
+        Check(File.Exists(path), "script load-list contract is missing: " + path);
+        return File.ReadLines(path)
+            .Select(line => line.Split(';', 2)[0].Trim())
+            .Where(line => line.StartsWith(">script", StringComparison.OrdinalIgnoreCase))
+            .Select(line => line.Split('=', 2))
+            .Where(parts => parts.Length == 2)
+            .Select(parts => parts[1].Trim())
+            .Where(module => module.Length > 0)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
     }
 
     private static void Expect<TException>(Action action, string error) where TException : Exception

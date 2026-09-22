@@ -54,11 +54,11 @@ public partial class MainWindow : Window
 
     private async void ThemeToggle_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is not System.Windows.Controls.CheckBox toggle) return;
-        toggle.IsEnabled = false;
+        if (sender is not System.Windows.Controls.Button button) return;
+        button.IsEnabled = false;
         try
         {
-            await _viewModel.SetLightThemeAsync(toggle.IsChecked == true);
+            await _viewModel.SetLightThemeAsync(!_viewModel.IsLightTheme);
         }
         catch (Exception exception)
         {
@@ -70,7 +70,7 @@ public partial class MainWindow : Window
         }
         finally
         {
-            toggle.IsEnabled = true;
+            button.IsEnabled = true;
         }
     }
 

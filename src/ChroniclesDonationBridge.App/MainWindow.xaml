@@ -614,13 +614,11 @@
                 <TextBlock Text="Интерактивные события для стрима" FontSize="12" Foreground="{DynamicResource MutedBrush}" Margin="0,3,0,0" />
             </StackPanel>
             <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-                <TextBlock Text="Светлая тема" Foreground="{DynamicResource MutedBrush}"
-                           VerticalAlignment="Center" Margin="0,0,8,0" />
-                <CheckBox IsChecked="{Binding IsLightTheme, Mode=OneWay}"
-                          Style="{StaticResource SwitchCheckBoxStyle}"
-                          Click="ThemeToggle_Click"
-                          ToolTip="Переключить серую тёмную и светлую темы"
-                          VerticalAlignment="Center" Margin="0,0,14,0" />
+                <Button x:Name="ThemeToggleButton"
+                        Content="{Binding ThemeButtonText, Mode=OneWay}"
+                        Click="ThemeToggle_Click"
+                        ToolTip="Переключить тёмную и светлую темы"
+                        Padding="14,8" VerticalAlignment="Center" Margin="0,0,10,0" />
                 <Button Content="Настройки" Click="Settings_Click"
                         Padding="17,8" VerticalAlignment="Center" />
             </StackPanel>

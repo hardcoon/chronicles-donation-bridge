@@ -1,4 +1,4 @@
-local C = { VERSION = "0.6.2", PROTOCOL = "2", UPDATE_MS = 100,
+local C = { VERSION = "0.6.3", PROTOCOL = "2", UPDATE_MS = 100,
 	RETRY_MS = 1000, LOAD_GRACE_MS = 1500, MAX_EVENTS = 8, RECENT_LIMIT = 256 }
 local STATE_KEY = "__pf_donation_runtime_v1"
 local state = rawget(_G, STATE_KEY)

@@ -108,6 +108,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public string NextEffectStatus { get => _nextEffectStatus; internal set => SetProperty(ref _nextEffectStatus, value); }
     public string DataDirectory => _runtime.DataDirectory;
     public bool IsLightTheme => _runtime.Settings.UseLightTheme;
+    public string ThemeButtonText => IsLightTheme ? "Тёмная тема" : "Светлая тема";
     public bool CanArm => _runtime.CanArmDonationProcessing;
     public string ProcessingSummary => Armed ? "Включена · активные действия выполняются по донатам" : "Остановлена · донаты не обрабатываются";
     public string ArmHint => !_runtime.DonationAccountConfigured
@@ -176,6 +177,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         {
             ThemeManager.Apply(useLightTheme);
             RaisePropertyChanged(nameof(IsLightTheme));
+            RaisePropertyChanged(nameof(ThemeButtonText));
             await _runtime.SaveSettingsAsync();
         }
         catch
@@ -183,6 +185,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             _runtime.Settings.UseLightTheme = previous;
             ThemeManager.Apply(previous);
             RaisePropertyChanged(nameof(IsLightTheme));
+            RaisePropertyChanged(nameof(ThemeButtonText));
             throw;
         }
     }
@@ -246,6 +249,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         RaisePropertyChanged(nameof(ArmHint));
         RaisePropertyChanged(nameof(DataDirectory));
         RaisePropertyChanged(nameof(IsLightTheme));
+        RaisePropertyChanged(nameof(ThemeButtonText));
         if (SortActiveByPriceCommand is AsyncRelayCommand sortCommand) sortCommand.RaiseCanExecuteChanged();
     }
 

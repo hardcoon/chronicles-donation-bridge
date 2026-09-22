@@ -43,10 +43,12 @@ function Convert-ToIconFrame {
     $canvas = [System.Drawing.Bitmap]::new($renderSize, $renderSize, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
     $graphics = [System.Drawing.Graphics]::FromImage($canvas)
     $backgroundPath = [System.Drawing.Drawing2D.GraphicsPath]::new()
-    $bellPath = [System.Drawing.Drawing2D.GraphicsPath]::new()
     $backgroundBrush = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(255, 28, 31, 34))
     $backgroundPen = [System.Drawing.Pen]::new([System.Drawing.Color]::FromArgb(255, 75, 82, 90), [single](2.5 * $scale))
-    $bellBrush = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(255, 242, 174, 74))
+    $markBrush = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(255, 119, 184, 232))
+    $textBrush = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(255, 240, 244, 248))
+    $font = [System.Drawing.Font]::new('Segoe UI', [single](43 * $scale), [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Pixel)
+    $format = [System.Drawing.StringFormat]::new()
 
     try {
         $graphics.Clear([System.Drawing.Color]::Transparent)
@@ -57,33 +59,27 @@ function Convert-ToIconFrame {
         Add-RoundedRectanglePath $backgroundPath (4 * $scale) (4 * $scale) (120 * $scale) (120 * $scale) (25 * $scale)
         $graphics.FillPath($backgroundBrush, $backgroundPath)
         $graphics.DrawPath($backgroundPen, $backgroundPath)
-
-        # Bell handle.
-        $graphics.FillEllipse($bellBrush, 55 * $scale, 17 * $scale, 18 * $scale, 16 * $scale)
-
-        # Wide, symmetrical bell silhouette. It intentionally avoids thin lines,
-        # so the mark remains recognisable in the 16-pixel taskbar variant.
-        $bellPath.StartFigure()
-        $bellPath.AddBezier(64 * $scale, 25 * $scale, 47 * $scale, 25 * $scale, 38 * $scale, 40 * $scale, 38 * $scale, 58 * $scale)
-        $bellPath.AddLine([single](38 * $scale), [single](58 * $scale), [single](38 * $scale), [single](72 * $scale))
-        $bellPath.AddBezier(38 * $scale, 72 * $scale, 38 * $scale, 80 * $scale, 33 * $scale, 87 * $scale, 27 * $scale, 91 * $scale)
-        $bellPath.AddBezier(27 * $scale, 91 * $scale, 24 * $scale, 93 * $scale, 26 * $scale, 98 * $scale, 31 * $scale, 98 * $scale)
-        $bellPath.AddLine([single](31 * $scale), [single](98 * $scale), [single](97 * $scale), [single](98 * $scale))
-        $bellPath.AddBezier(97 * $scale, 98 * $scale, 102 * $scale, 98 * $scale, 104 * $scale, 93 * $scale, 101 * $scale, 91 * $scale)
-        $bellPath.AddBezier(101 * $scale, 91 * $scale, 95 * $scale, 87 * $scale, 90 * $scale, 80 * $scale, 90 * $scale, 72 * $scale)
-        $bellPath.AddLine([single](90 * $scale), [single](72 * $scale), [single](90 * $scale), [single](58 * $scale))
-        $bellPath.AddBezier(90 * $scale, 58 * $scale, 90 * $scale, 40 * $scale, 81 * $scale, 25 * $scale, 64 * $scale, 25 * $scale)
-        $bellPath.CloseFigure()
-        $graphics.FillPath($bellBrush, $bellPath)
-        $graphics.FillEllipse($bellBrush, 55 * $scale, 98 * $scale, 18 * $scale, 13 * $scale)
+        # The DB monogram matches the application's header and remains legible
+        # in both the title bar and the 16-pixel notification-area variant.
+        $format.Alignment = [System.Drawing.StringAlignment]::Center
+        $format.LineAlignment = [System.Drawing.StringAlignment]::Center
+        $graphics.DrawString(
+            'DB',
+            $font,
+            $textBrush,
+            [System.Drawing.RectangleF]::new(10 * $scale, 16 * $scale, 108 * $scale, 82 * $scale),
+            $format)
+        $graphics.FillRectangle($markBrush, 28 * $scale, 99 * $scale, 72 * $scale, 7 * $scale)
     }
     finally {
         $graphics.Dispose()
         $backgroundPath.Dispose()
-        $bellPath.Dispose()
         $backgroundBrush.Dispose()
         $backgroundPen.Dispose()
-        $bellBrush.Dispose()
+        $markBrush.Dispose()
+        $textBrush.Dispose()
+        $font.Dispose()
+        $format.Dispose()
     }
 
     $frame = [System.Drawing.Bitmap]::new($Size, $Size, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)

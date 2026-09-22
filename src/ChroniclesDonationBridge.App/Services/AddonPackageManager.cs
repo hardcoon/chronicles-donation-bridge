@@ -14,7 +14,7 @@ public enum AddonInstallState
 public sealed record AddonInstallationStatus(
     AddonInstallState State,
     string Message,
-    string PackageVersion = "0.6.2")
+    string PackageVersion = "0.6.3")
 {
     public bool CanInstall => State is AddonInstallState.NotInstalled or AddonInstallState.UpdateAvailable;
 }
@@ -26,7 +26,7 @@ public sealed record AddonInstallationStatus(
 /// </summary>
 public sealed class AddonPackageManager
 {
-    public const string ShippedAddonVersion = "0.6.2";
+    public const string ShippedAddonVersion = "0.6.3";
     private static readonly string[] ObsoleteRelativePaths =
     [
         "configs/mod_system_pf_donation_random_squads.ltx"

@@ -25,7 +25,6 @@ name: Chronicles Donation Bridge - Game Addon
 >script = pf_donation_action_drop_random_items
 >script = pf_donation_action_teleport_random
 >script = pf_donation_action_vehicle
->script = pf_donation_action_explode_nearest_vehicle
 >script = pf_donation_action_random_active
 >script = pf_donation_action_random_all_presets
 >script = pf_donation_runtime
