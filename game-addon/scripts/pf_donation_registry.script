@@ -1,0 +1,106 @@
+local actions = {}
+local action_order = {}
+local impl = {}
+
+function impl.valid_action_id(action_id)
+	return type(action_id) == "string" and action_id ~= "" and #action_id <= 64 and
+		action_id:match("^[a-z0-9_.-]+$") ~= nil
+end
+
+function impl.clean_reason(reason)
+	reason = tostring(reason or "")
+	reason = reason:gsub("[%z\1-\31\127]", " ")
+	if #reason > 240 then reason = reason:sub(1, 240) end
+	return reason ~= "" and reason or "unspecified"
+end
+
+function impl.valid_status(status)
+	return status == "executed" or status == "deferred" or status == "rejected" or
+		status == "uncertain"
+end
+
+function register(action_id, descriptor)
+	if not impl.valid_action_id(action_id) then return false, "action_id_invalid" end
+	if type(descriptor) ~= "table" or type(descriptor.execute) ~= "function" then
+		return false, "action_descriptor_invalid"
+	end
+	if descriptor.can_execute ~= nil and type(descriptor.can_execute) ~= "function" then
+		return false, "action_check_invalid"
+	end
+	if descriptor.update ~= nil and type(descriptor.update) ~= "function" then
+		return false, "action_update_invalid"
+	end
+	if descriptor.on_game_load ~= nil and type(descriptor.on_game_load) ~= "function" then
+		return false, "action_load_handler_invalid"
+	end
+	if descriptor.poll ~= nil and type(descriptor.poll) ~= "function" then
+		return false, "action_poll_handler_invalid"
+	end
+	if actions[action_id] ~= nil then return false, "action_already_registered" end
+	descriptor.id = action_id
+	actions[action_id] = descriptor
+	action_order[#action_order + 1] = action_id
+	return true
+end
+
+function get(action_id)
+	return actions[tostring(action_id or "")]
+end
+
+function list()
+	local result = {}
+	for _, action_id in ipairs(action_order) do result[#result + 1] = actions[action_id] end
+	return result
+end
+
+function update(now)
+	for _, action_id in ipairs(action_order) do
+		local callback = actions[action_id].update
+		if callback ~= nil then pcall(callback, now) end
+	end
+end
+
+function on_game_load()
+	for _, action_id in ipairs(action_order) do
+		local callback = actions[action_id].on_game_load
+		if callback ~= nil then pcall(callback) end
+	end
+end
+
+function dispatch(action_id, context, params)
+	local descriptor = get(action_id)
+	if descriptor == nil then return "rejected", "action_not_registered" end
+	if type(context) ~= "table" or type(params) ~= "table" then
+		return "rejected", "action_context_invalid"
+	end
+	if descriptor.can_execute then
+		local check_ok, allowed, status, reason = pcall(descriptor.can_execute, context, params)
+		if not check_ok then return "rejected", "action_check_failed" end
+		if allowed ~= true then
+			if not impl.valid_status(status) or status == "executed" then status = "rejected" end
+			return status, impl.clean_reason(reason)
+		end
+	end
+	local execute_ok, status, reason = pcall(descriptor.execute, context, params)
+	if not execute_ok then return "uncertain", "action_execution_failed" end
+	if status == "pending" and type(descriptor.poll) == "function" then
+		return status, impl.clean_reason(reason)
+	end
+	if not impl.valid_status(status) then return "uncertain", "action_result_invalid" end
+	return status, impl.clean_reason(reason)
+end
+
+-- Internal async completion only; "pending" is never sent over the v2 wire.
+function poll(action_id, context, now)
+	local descriptor = get(action_id)
+	if descriptor == nil or type(descriptor.poll) ~= "function" then
+		return "uncertain", "action_poll_unavailable"
+	end
+	local ok, status, reason = pcall(descriptor.poll, context, now)
+	if not ok then return "uncertain", "action_poll_failed" end
+	if status ~= "pending" and status ~= "executed" and status ~= "rejected" and status ~= "uncertain" then
+		-- A mutated command may never become deferred and auto-run a second time.
+		return "uncertain", "action_poll_result_invalid"
+	end
+	return status, impl.clean_reason(reason)
+end

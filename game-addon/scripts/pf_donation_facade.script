@@ -1,0 +1,26 @@
+local STATE_KEY = "__pf_donation_facade_v1"
+local state = rawget(_G, STATE_KEY)
+
+if type(state) ~= "table" then
+	state = { callbacks_registered = false }
+	rawset(_G, STATE_KEY, state)
+end
+
+function actor_on_update()
+	return pf_donation_runtime.update()
+end
+
+function on_game_load()
+	return pf_donation_runtime.on_game_load()
+end
+
+function on_game_start()
+	if state.callbacks_registered then return true end
+	if type(RegisterScriptCallback) ~= "function" then return false end
+	RegisterScriptCallback("update", actor_on_update)
+	RegisterScriptCallback("load", on_game_load)
+	state.callbacks_registered = true
+	return true
+end
+
+on_game_start()

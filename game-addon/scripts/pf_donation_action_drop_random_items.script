@@ -1,0 +1,135 @@
+--[[CDB_PRESET_V1
+{"schemaVersion":1,"handlerId":"drop_random_items","displayName":"Выбросить случайный предмет","description":"Выбрасывает указанное число случайных безопасных предметов из любых типов и стаков; если их меньше — выбрасывает все доступные.","category":"inventory","cooldownSeconds":1,"parameterDefinitions":[{"key":"count","displayName":"Количество предметов","kind":"Integer","minimum":1,"maximum":10,"defaultValue":"1"}],"parameters":{"count":"1"}}
+CDB_PRESET_END]]
+local ACTION_ID = "drop_random_items"
+local C = {
+	ALLOWED_GROUPS = {
+		weapons = true, ammo_explosives = true, armor = true, weapon_addons = true,
+		electronics = true, artefacts = true, medicine = true, food = true,
+		repair_tools = true, materials = true, mutant_parts = true, misc = true
+	},
+	REGISTRY = "inventory_sort_registry"
+}
+local impl = {}
+
+function impl.parse(params)
+	for key in pairs(params) do
+		if key ~= "count" then return nil, "parameter_not_supported" end
+	end
+	local text = tostring(params.count or "1")
+	if not text:match("^%d+$") then return nil, "random_item_count_invalid" end
+	local count = tonumber(text)
+	if count == nil or count < 1 or count > 10 then return nil, "random_item_count_invalid" end
+	return count
+end
+
+function impl.is_safe_item(actor, simulator, item, equipped)
+	if item == nil or equipped[item:id()] or actor:is_on_belt(item) then return false end
+	if simulator:object(item:id(), true) == nil then return false end
+	if type(get_object_story_id) == "function" and get_object_story_id(item:id()) ~= nil then
+		return false
+	end
+	local section = item:section()
+	local ini = system_ini()
+	if ini == nil or not ini:section_exist(section) or
+		not ini:section_exist(C.REGISTRY) or not ini:line_exist(C.REGISTRY, section) then
+		return false
+	end
+	local group = tostring(ini:r_string(C.REGISTRY, section) or ""):lower()
+	if C.ALLOWED_GROUPS[group] ~= true then return false end
+	if ini:line_exist(section, "quest_item") and ini:r_bool(section, "quest_item") then return false end
+	if ini:line_exist(section, "can_trade") and not ini:r_bool(section, "can_trade") then return false end
+	return true
+end
+
+function impl.collect(actor, simulator)
+	local equipped = {}
+	-- IX-Ray extends the inventory through CUSTOM_SLOT_10; LAST_SLOT is 23.
+	-- Keep every equipped custom-slot item out of the random drop pool as well.
+	for slot = 1, 23 do
+		local item = actor:item_in_slot(slot)
+		if item ~= nil then equipped[item:id()] = true end
+	end
+	local active_item = actor:active_item()
+	if active_item ~= nil then equipped[active_item:id()] = true end
+	local candidates = {}
+	local seen = {}
+	actor:iterate_inventory(function(_, item)
+		local item_id = item ~= nil and item:id() or nil
+		if item_id ~= nil and not seen[item_id] and
+			impl.is_safe_item(actor, simulator, item, equipped) then
+			seen[item_id] = true
+			candidates[#candidates + 1] = item
+		end
+	end, actor)
+	return candidates
+end
+
+function impl.select(candidates, count)
+	if #candidates == 0 then return nil, 0 end
+	for index = #candidates, 2, -1 do
+		local other = math.random(index)
+		candidates[index], candidates[other] = candidates[other], candidates[index]
+	end
+	local selected = {}
+	local selected_count = math.min(#candidates, count)
+	for index = 1, selected_count do
+		selected[index] = candidates[index]
+	end
+	return selected, selected_count
+end
+
+function impl.can_execute(context, params)
+	local count, error_code = impl.parse(params)
+	if count == nil then return false, "rejected", error_code end
+	local simulator = alife and alife() or nil
+	if simulator == nil then return false, "deferred", "alife_unavailable" end
+	local selected, selected_count = impl.select(impl.collect(context.actor, simulator), count)
+	if selected == nil or selected_count < 1 then
+		return false, "rejected", "random_item_pool_empty"
+	end
+	context.random_items = selected
+	context.random_item_count = selected_count
+	context.random_item_requested_count = count
+	return true
+end
+
+function impl.execute(context)
+	local simulator = alife and alife() or nil
+	if simulator == nil then return "deferred", "alife_unavailable" end
+	local available = {}
+	for _, item in ipairs(impl.collect(context.actor, simulator)) do
+		available[item:id()] = true
+	end
+	local selected_ids = {}
+	for index = 1, context.random_item_count or 0 do
+		local item = context.random_items and context.random_items[index] or nil
+		local item_id = item ~= nil and item:id() or nil
+		if item_id == nil or selected_ids[item_id] or not available[item_id] then
+			return "rejected", "random_item_selection_changed"
+		end
+		selected_ids[item_id] = true
+	end
+	if (context.random_item_count or 0) < 1 then
+		return "rejected", "random_item_pool_empty"
+	end
+
+	local dropped = 0
+	for index = 1, context.random_item_count or 0 do
+		local item = context.random_items[index]
+		local ok = pcall(function() context.actor:drop_item(item) end)
+		if not ok then
+			return dropped > 0 and "uncertain" or "rejected",
+				dropped > 0 and "random_items_partially_dropped" or "random_item_drop_failed"
+		end
+		dropped = dropped + 1
+	end
+	if dropped == 0 then return "rejected", "random_item_pool_empty" end
+	return "executed", "random_items_dropped_" .. tostring(dropped)
+end
+
+pf_donation_registry.register(ACTION_ID, {
+	source = "scripts\\pf_donation_action_drop_random_items.script",
+	can_execute = impl.can_execute,
+	execute = impl.execute
+})

@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>ChroniclesDonationBridge</AssemblyName>
+    <RootNamespace>ChroniclesDonationBridge.App</RootNamespace>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <PublishReadyToRun>false</PublishReadyToRun>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\ChroniclesDonationBridge.ico</ApplicationIcon>
+    <Version>1.6.2</Version>
+  </PropertyGroup>
+  <ItemGroup>
+    <Using Remove="System.Drawing" />
+    <Using Remove="System.Windows.Forms" />
+    <ProjectReference Include="..\ChroniclesDonationBridge.Core\ChroniclesDonationBridge.Core.csproj" />
+    <ProjectReference Include="..\ChroniclesDonationBridge.Persistence\ChroniclesDonationBridge.Persistence.csproj" />
+    <ProjectReference Include="..\ChroniclesDonationBridge.DonationAlerts\ChroniclesDonationBridge.DonationAlerts.csproj" />
+    <ProjectReference Include="..\ChroniclesDonationBridge.GameIpc\ChroniclesDonationBridge.GameIpc.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Resource Include="Assets\ChroniclesDonationBridge.ico" />
+  </ItemGroup>
+</Project>

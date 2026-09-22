@@ -1,0 +1,37 @@
+--[[CDB_PRESET_V1
+{"schemaVersion":1,"handlerId":"add_radiation","displayName":"Добавить радиацию","description":"Добавляет или убирает указанный процент радиационного заражения.","category":"player_state","cooldownSeconds":1,"parameterDefinitions":[{"key":"percent","displayName":"Изменение, %","kind":"Percent","minimum":-100,"maximum":100,"defaultValue":"25"}],"parameters":{"percent":"25"}}
+CDB_PRESET_END]]
+local ACTION_ID = "add_radiation"
+local DEFAULT_PERCENT = 25
+local impl = {}
+
+function impl.params_valid(params)
+	for key in pairs(params) do
+		if key ~= "percent" then return false, "parameter_not_supported" end
+	end
+	local percent = tonumber(params.percent or DEFAULT_PERCENT)
+	if percent == nil or percent < -100 or percent > 100 then
+		return false, "radiation_percent_invalid"
+	end
+	return true, percent
+end
+
+function impl.can_execute(context, params)
+	local valid, value = impl.params_valid(params)
+	if not valid then return false, "rejected", value end
+	if context.actor == nil then return false, "deferred", "actor_unavailable" end
+	return true
+end
+
+function impl.execute(context, params)
+	local valid, percent = impl.params_valid(params)
+	if not valid then return "rejected", percent end
+	context.actor.radiation = percent / 100
+	return "executed", "radiation_changed_percent_" .. tostring(percent)
+end
+
+pf_donation_registry.register(ACTION_ID, {
+	source = "scripts\\pf_donation_action_add_radiation.script",
+	can_execute = impl.can_execute,
+	execute = impl.execute
+})

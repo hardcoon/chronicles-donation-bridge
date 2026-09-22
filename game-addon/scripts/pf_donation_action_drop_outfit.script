@@ -1,0 +1,65 @@
+--[[CDB_PRESET_V1
+{"schemaVersion":1,"handlerId":"drop_outfit","displayName":"Бросить экипировку","description":"Снимает броню, шлем или оба предмета и оставляет их на земле; защищённые вещи не трогает.","category":"inventory","cooldownSeconds":1,"parameterDefinitions":[{"key":"target","displayName":"Что снять","kind":"Choice","options":["outfit","helmet","both"],"optionLabels":{"outfit":"Броня","helmet":"Шлем","both":"Всё вместе"},"defaultValue":"outfit"}],"parameters":{"target":"outfit"}}
+CDB_PRESET_END]]
+local ACTION_ID = "drop_outfit"
+local C = { TARGET_SLOTS = { outfit = { 7 }, helmet = { 12 }, both = { 7, 12 } } }
+local impl = {}
+
+function impl.parse(params)
+	for key in pairs(params) do
+		if key ~= "target" then return nil, "parameter_not_supported" end
+	end
+	local target = tostring(params.target or "outfit"):lower()
+	if C.TARGET_SLOTS[target] == nil then return nil, "gear_target_invalid" end
+	return target
+end
+
+function impl.protected(item)
+	local section = item and item:section() or nil
+	local ini = system_ini()
+	if section == nil or ini == nil or not ini:section_exist(section) then return true end
+	if type(get_object_story_id) == "function" and get_object_story_id(item:id()) ~= nil then
+		return true
+	end
+	if ini:line_exist(section, "quest_item") and ini:r_bool(section, "quest_item") then return true end
+	if ini:line_exist(section, "can_trade") and not ini:r_bool(section, "can_trade") then return true end
+	return false
+end
+
+function impl.can_execute(context, params)
+	local target, error_code = impl.parse(params)
+	if target == nil then return false, "rejected", error_code end
+	local items = {}
+	for _, slot in ipairs(C.TARGET_SLOTS[target]) do
+		local item = context.actor:item_in_slot(slot)
+		if item ~= nil and not impl.protected(item) then
+			items[#items + 1] = item
+		elseif target ~= "both" then
+			return false, "rejected", "removable_gear_required"
+		end
+	end
+	if #items == 0 then return false, "rejected", "removable_gear_required" end
+	context.gear_to_drop = items
+	context.gear_target = target
+	return true
+end
+
+function impl.execute(context)
+	local dropped = 0
+	for _, item in ipairs(context.gear_to_drop or {}) do
+		local ok = pcall(function() context.actor:drop_item(item) end)
+		if not ok then
+			return dropped > 0 and "uncertain" or "rejected",
+				dropped > 0 and "gear_partially_dropped" or "gear_drop_failed"
+		end
+		dropped = dropped + 1
+	end
+	if dropped == 0 then return "rejected", "removable_gear_required" end
+	return "executed", "gear_dropped_" .. tostring(context.gear_target) .. "_" .. tostring(dropped)
+end
+
+pf_donation_registry.register(ACTION_ID, {
+	source = "scripts\\pf_donation_action_drop_outfit.script",
+	can_execute = impl.can_execute,
+	execute = impl.execute
+})

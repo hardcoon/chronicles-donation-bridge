@@ -1,0 +1,135 @@
+local C = {
+	MAX_WIRE_BYTES = 16384,
+	MAX_FIELDS = 16,
+	MAX_PARAM_COUNT = 32,
+	MAX_PARAM_KEY = 64,
+	MAX_PARAM_VALUE = 1024
+}
+local impl = {}
+
+function impl.valid_percent_encoding(value)
+	local index = 1
+	while true do
+		local marker = value:find("%", index, true)
+		if not marker then return true end
+		if marker + 2 > #value or not value:sub(marker + 1, marker + 2):match("^%x%x$") then
+			return false
+		end
+		index = marker + 3
+	end
+end
+
+function percent_encode(value)
+	return (tostring(value or ""):gsub(".", function(character)
+		local byte = string.byte(character)
+		if (byte >= 48 and byte <= 57) or (byte >= 65 and byte <= 90) or
+			(byte >= 97 and byte <= 122) or character == "-" or character == "_" or
+			character == "." or character == "~" then
+			return character
+		end
+		return string.format("%%%02X", byte)
+	end))
+end
+
+function percent_decode(value)
+	value = tostring(value or "")
+	if not impl.valid_percent_encoding(value) then return nil, "percent_encoding_invalid" end
+	return (value:gsub("%%(%x%x)", function(hex)
+		return string.char(tonumber(hex, 16))
+	end))
+end
+
+function encode_fields(fields)
+	if type(fields) ~= "table" or #fields < 1 or #fields > C.MAX_FIELDS then
+		return nil, "field_count_invalid"
+	end
+	local encoded = {}
+	for index, value in ipairs(fields) do encoded[index] = percent_encode(value) end
+	local line = table.concat(encoded, "\t")
+	if #line + 1 > C.MAX_WIRE_BYTES then return nil, "wire_message_too_large" end
+	return line .. "\n"
+end
+
+function decode_line(line)
+	line = tostring(line or "")
+	if #line + 1 > C.MAX_WIRE_BYTES then return nil, "wire_message_too_large" end
+	local fields = {}
+	for encoded in (line .. "\t"):gmatch("(.-)\t") do
+		if #fields >= C.MAX_FIELDS then return nil, "field_count_invalid" end
+		local decoded, error_code = percent_decode(encoded)
+		if decoded == nil then return nil, error_code end
+		fields[#fields + 1] = decoded
+	end
+	if #fields < 1 then return nil, "field_count_invalid" end
+	return fields
+end
+
+function impl.safe_token(value, max_length)
+	value = tostring(value or "")
+	return value ~= "" and #value <= max_length and not value:find("[%z\1-\31\127]")
+end
+
+function parse_params(value)
+	value = tostring(value or "")
+	if value == "" then return {} end
+	local params = {}
+	local count = 0
+	for pair in (value .. ";"):gmatch("(.-);") do
+		if pair == "" then return nil, "params_pair_empty" end
+		local separator = pair:find("=", 1, true)
+		if not separator then return nil, "params_pair_invalid" end
+		local key, key_error = percent_decode(pair:sub(1, separator - 1))
+		local parameter, value_error = percent_decode(pair:sub(separator + 1))
+		if key == nil then return nil, key_error end
+		if parameter == nil then return nil, value_error end
+		if key == "" or #key > C.MAX_PARAM_KEY or not key:match("^[a-z0-9_.-]+$") then
+			return nil, "params_key_invalid"
+		end
+		if #parameter > C.MAX_PARAM_VALUE or parameter:find("[%z\1-\8\11\12\14-\31\127]") then
+			return nil, "params_value_invalid"
+		end
+		if params[key] ~= nil then return nil, "params_key_duplicate" end
+		count = count + 1
+		if count > C.MAX_PARAM_COUNT then return nil, "params_count_invalid" end
+		params[key] = parameter
+	end
+	return params
+end
+
+function parse_command(fields)
+	if type(fields) ~= "table" or fields[1] ~= "COMMAND" or #fields ~= 7 then
+		return nil, "command_shape_invalid"
+	end
+	local command_id = tostring(fields[2] or "")
+	if not impl.safe_token(command_id, 160) then return nil, "command_id_invalid", "invalid" end
+	if not impl.safe_token(fields[3], 160) then return nil, "donation_id_invalid", command_id end
+	if not tostring(fields[4] or ""):match("^[a-z0-9_.-]+$") or #fields[4] > 64 then
+		return nil, "action_id_invalid", command_id
+	end
+	local amount_text = tostring(fields[5] or "")
+	if not amount_text:match("^%d+$") or #amount_text > 15 then
+		return nil, "amount_minor_invalid", command_id
+	end
+	local amount_minor = tonumber(amount_text)
+	if amount_minor == nil or amount_minor < 0 or amount_minor > 999999999999999 then
+		return nil, "amount_minor_invalid", command_id
+	end
+	local currency = tostring(fields[6] or ""):upper()
+	if not currency:match("^[A-Z][A-Z][A-Z]$") then
+		return nil, "currency_invalid", command_id
+	end
+	local params, params_error = parse_params(fields[7])
+	if params == nil then return nil, params_error, command_id end
+	return {
+		command_id = command_id,
+		donation_id = tostring(fields[3]),
+		action_id = tostring(fields[4]),
+		amount_minor = amount_minor,
+		currency = currency,
+		params = params
+	}
+end
+
+function max_wire_bytes()
+	return C.MAX_WIRE_BYTES
+end

@@ -1,0 +1,223 @@
+; Companion manifest. Values describe the UI only and are never executed by Lua.
+; param.<key> = Kind|min|max|comma-separated options|default|display name
+
+[action:add_radiation]
+name = Добавить радиацию
+description = Добавляет или убирает указанный процент радиационного заражения.
+script = scripts\pf_donation_action_add_radiation.script
+default_active = true
+cooldown_seconds = 1
+default_params = percent=25
+param.percent = Percent|-100|100||25|Изменение, %
+trigger.1 = Exact|1|RUB
+
+[action:drop_active_weapon]
+name = Выбить оружие
+description = Ждёт появления обычного оружия в руках указанное время, затем выбрасывает его.
+script = scripts\pf_donation_action_drop_active_weapon.script
+default_active = true
+cooldown_seconds = 1
+default_params = wait_seconds=10
+param.wait_seconds = Integer|0|60||10|Ждать оружие в руках, сек.
+trigger.1 = Exact|2|RUB
+
+[action:spawn_mutants]
+name = Заспавнить мутантов
+description = Создаёт одну или несколько настроенных групп безопасных мутантов за одно срабатывание. До 99 в каждой строке; большие стаи могут сильно нагрузить игру.
+script = scripts\pf_donation_action_spawn_mutants.script
+default_active = true
+cooldown_seconds = 1
+default_params = species=dog,strength=medium,count=3
+param.species = Choice|||dog,boar,flesh,tushkano,pseudodog,psy_dog,bloodsucker,snork,burer,controller,poltergeist,chimera,pseudogiant|dog|Вид
+param.strength = Choice|||weak,medium,strong|medium|Сила
+param.count = Integer|1|99||3|Количество (1–99)
+trigger.1 = Exact|3|RUB
+
+[action:spawn_npcs]
+name = Заспавнить NPC
+description = Создаёт одну или несколько групп NPC выбранных группировок и силы за одно срабатывание. До 99 в каждой строке; большие отряды могут сильно нагрузить игру.
+script = scripts\pf_donation_action_spawn_npcs.script
+default_active = false
+cooldown_seconds = 1
+default_params = faction=bandit,strength=medium,count=1
+param.faction = Choice|||stalker,bandit,duty,freedom,military,monolith,killer|bandit|Группировка
+param.strength = Choice|||weak,medium,strong|medium|Сила
+param.count = Integer|1|99||1|Количество (1–99)
+
+[action:spawn_random_hostile_squad]
+name = Случайный вражеский отряд
+description = Создаёт независимых NPC случайной враждебной игроку группировки без simulation squad. Диапазон 1–99; большие группы могут сильно нагрузить игру.
+script = scripts\pf_donation_action_spawn_random_hostile_squad.script
+default_active = false
+cooldown_seconds = 1
+default_params = minimum_count=1,maximum_count=10
+param.minimum_count = Integer|1|99||1|Минимум бойцов
+param.maximum_count = Integer|1|99||10|Максимум бойцов
+
+[action:spawn_random_mutant_pack]
+name = Случайная стая мутантов
+description = Случайно выбирает безопасный вид и силу, затем создаёт независимых мутантов без simulation squad. Диапазон 1–99; большие группы могут сильно нагрузить игру.
+script = scripts\pf_donation_action_spawn_random_mutant_pack.script
+default_active = false
+cooldown_seconds = 1
+default_params = minimum_count=1,maximum_count=10
+param.minimum_count = Integer|1|99||1|Минимум мутантов
+param.maximum_count = Integer|1|99||10|Максимум мутантов
+
+[action:change_health]
+name = Изменить здоровье
+description = Добавляет или отнимает указанный процент максимального здоровья.
+script = scripts\pf_donation_action_change_health.script
+default_active = false
+cooldown_seconds = 1
+default_params = percent=25
+param.percent = Percent|-100|100||25|Изменение, %
+
+[action:god_mode]
+name = Год-мод
+description = Включает штатный g_god на выбранное число секунд, затем выключает его.
+script = scripts\pf_donation_action_invulnerability.script
+default_active = false
+cooldown_seconds = 1
+default_params = duration_seconds=30
+param.duration_seconds = Integer|5|600||30|Длительность неуязвимости, сек.
+
+[action:change_needs]
+name = Изменить голод и жажду
+description = Одновременно изменяет обе потребности: плюс утоляет, минус усиливает, ноль оставляет без изменения.
+script = scripts\pf_donation_action_change_needs.script
+default_active = false
+cooldown_seconds = 1
+default_params = hunger_percent=25,thirst_percent=25
+param.hunger_percent = Percent|-100|100||25|Голод, % (+ утолить / − усилить)
+param.thirst_percent = Percent|-100|100||25|Жажда, % (+ утолить / − усилить)
+
+[action:spawn_items]
+name = Добавить предметы в инвентарь
+description = Добавляет выбранные предметы из безопасных категорий игрового спавнера прямо в инвентарь персонажа.
+script = scripts\pf_donation_action_spawn_items.script
+default_active = false
+cooldown_seconds = 1
+default_params = item=medkit,count=1
+param.item = ItemChoice|||bandage,medkit,antirad,bread,conserva,vodka,ammo_9x18_fmj,ammo_5.45x39_fmj,ammo_12x70_buck|medkit|Предмет
+param.count = Integer|1|50||1|Количество
+
+[action:change_money]
+name = Изменить деньги
+description = Положительная сумма добавляет игровые деньги, отрицательная отнимает; баланс не опускается ниже нуля.
+script = scripts\pf_donation_action_change_money.script
+default_active = false
+cooldown_seconds = 1
+default_params = amount=1000
+param.amount = Integer|-1000000|1000000||1000|Сумма, ₽ (+/−)
+
+[action:spawn_anomaly]
+name = Создать временную аномалию
+description = Создаёт одну временную аномалию на выбранной дальности; 0 м означает прямо под персонажем.
+script = scripts\pf_donation_action_spawn_anomaly.script
+default_active = false
+cooldown_seconds = 1
+default_params = type=gravitational,strength=medium,distance_meters=20,lifetime_seconds=60
+param.type = Choice|||gravitational,electric,thermal,acidic|gravitational|Тип
+param.strength = Choice|||weak,medium,strong|medium|Сила
+param.distance_meters = Integer|0|100||20|Дальность, м
+param.lifetime_seconds = Integer|10|300||60|Время жизни, с
+
+[action:get_drunk]
+name = Наложить эффект опьянения
+description = Включает штатный эффект опьянения на выбранное время, не создавая и не расходуя предметы персонажа.
+script = scripts\pf_donation_action_get_drunk.script
+default_active = false
+cooldown_seconds = 1
+default_params = duration_seconds=30
+param.duration_seconds = Integer|5|300||30|Длительность опьянения, сек.
+
+[action:trigger_emission]
+name = Вызвать выброс
+description = Запускает штатный выброс на текущей локации, если он доступен и ещё не идёт.
+script = scripts\pf_donation_action_trigger_emission.script
+default_active = false
+cooldown_seconds = 1
+default_params =
+
+[action:sleep_hours]
+name = Заставить персонажа поспать
+description = Запускает штатное затемнение и плавное пробуждение, сдвигает время и применяет обычные последствия сна.
+script = scripts\pf_donation_action_sleep_hours.script
+default_active = false
+cooldown_seconds = 1
+default_params = hours=6
+param.hours = Integer|1|24||6|Продолжительность сна, часов
+
+[action:drop_outfit]
+name = Бросить экипировку
+description = Снимает броню, шлем или оба предмета и оставляет их на земле; защищённые вещи не трогает.
+script = scripts\pf_donation_action_drop_outfit.script
+default_active = false
+cooldown_seconds = 1
+default_params = target=outfit
+param.target = Choice|||outfit,helmet,both|outfit|Что снять
+
+[action:damage_equipment]
+name = Повредить экипировку
+description = Уменьшает текущее состояние брони, шлема или обоих предметов на указанное число процентных пунктов.
+script = scripts\pf_donation_action_damage_equipment.script
+default_active = false
+cooldown_seconds = 1
+default_params = target=outfit,percent=25
+param.target = Choice|||outfit,helmet,both|outfit|Что повредить
+param.percent = Percent|1|100||25|Уменьшить состояние на, %
+
+[action:drop_random_items]
+name = Выбросить случайный предмет
+description = Выбрасывает указанное число случайных безопасных предметов из любых типов и стаков; если их меньше — выбрасывает все доступные.
+script = scripts\pf_donation_action_drop_random_items.script
+default_active = false
+cooldown_seconds = 1
+default_params = count=1
+param.count = Integer|1|10||1|Количество предметов
+
+[action:teleport_random]
+name = Случайный телепорт
+description = Перемещает персонажа на случайную безопасную вершину текущей локации в заданном диапазоне.
+script = scripts\pf_donation_action_teleport_random.script
+default_active = false
+cooldown_seconds = 1
+default_params = minimum_meters=25,maximum_meters=100
+param.minimum_meters = Integer|10|2000||25|Минимум, м
+param.maximum_meters = Integer|10|2000||100|Максимум, м
+
+[action:spawn_vehicle]
+name = Заспавнить транспорт
+description = Создаёт одну машину на ближайшем свободном месте: сначала в пределах 10 м перед персонажем, затем ищет подходящую площадку до 100 м. Бензин: от 1 до 10 литров. У legacy-транспорта сохраняются штатные расход и заправка.
+script = scripts\pf_donation_action_vehicle.script
+default_active = false
+cooldown_seconds = 1
+default_params = vehicle=veh_dcp_niva,fuel_level=5
+param.vehicle = Choice|||veh_dcp_niva,veh_dcp_niva_green,veh_dcp_zaz968_2,veh_dcp_lada_2101,veh_dcp_lada_dead,veh_dcp_uaz_van,veh_dcp_uaz_van_broken,veh_dcp_uaz_broken,veh_dcp_gaz24,veh_dcp_moskvich_412,veh_dcp_raf,veh_dcp_moskvich_2715,veh_dcp_uaz,veh_dcp_zil,veh_dcp_zil131,veh_dcp_mercedes_w123,veh_dcp_lada_2107,veh_dcp_lada_2108,veh_dcp_niva_2329,veh_dcp_brdm,veh_dcp_btr,veh_dcp_kamaz_army_tent,veh_dcp_kamaz_army,veh_btr,veh_kamaz,veh_niva_g,veh_niva_w,veh_tr13,veh_uaz,veh_zaz|veh_dcp_niva|Транспорт
+param.fuel_level = Integer|1|10||5|Бензин, литры (1–10)
+
+[action:explode_nearest_vehicle]
+name = Взорвать ближайший транспорт
+description = Взрывает одну ближайшую несюжетную машину в заданном радиусе до 2000 м. Взрыв может ранить персонажа и уничтожить вещи в багажнике.
+script = scripts\pf_donation_action_vehicle.script
+default_active = false
+cooldown_seconds = 1
+default_params = radius_meters=5
+param.radius_meters = Integer|1|2000||5|Радиус поиска, м
+
+[action:random_active]
+name = Рандомный по активным пресетам
+description = Выбирает один из остальных доступных активных вариантов; выбор выполняет внешняя программа.
+script = scripts\pf_donation_action_random_active.script
+default_active = false
+cooldown_seconds = 1
+default_params =
+
+[action:random_all_presets]
+name = Рандом по ВСЕМ пресетам
+description = Выбирает эффект из всего каталога и создаёт безопасные случайные параметры; выдача предметов исключена.
+script = scripts\pf_donation_action_random_all_presets.script
+default_active = false
+cooldown_seconds = 1
+default_params =

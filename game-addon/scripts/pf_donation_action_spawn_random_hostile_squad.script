@@ -1,0 +1,165 @@
+--[[CDB_PRESET_V1
+{"schemaVersion":1,"handlerId":"spawn_random_hostile_squad","displayName":"Случайный вражеский отряд","description":"Создаёт независимых NPC случайной враждебной игроку группировки без simulation squad. Диапазон 1–99; большие группы могут сильно нагрузить игру.","category":"npc_mutants","cooldownSeconds":1,"parameterDefinitions":[{"key":"minimum_count","displayName":"Минимум бойцов","kind":"Integer","minimum":1,"maximum":99,"defaultValue":"1"},{"key":"maximum_count","displayName":"Максимум бойцов","kind":"Integer","minimum":1,"maximum":99,"defaultValue":"10"}],"parameters":{"minimum_count":"1","maximum_count":"10"}}
+CDB_PRESET_END]]
+local ACTION_ID = "spawn_random_hostile_squad"
+local C = {
+	INVALID_VERTEX = 4294967295,
+	RADII = { 15, 17.5, 20, 22.5, 25 },
+	ATTEMPTS = 240,
+	ENEMY_THRESHOLD = -1000,
+	VISIBILITY_MS = 5000,
+	CANDIDATES = {
+		{ id = "stalker", community = "stalker", profiles = { "sim_default_stalker_0", "sim_default_stalker_1", "sim_default_stalker_2", "sim_default_stalker_3", "sim_default_stalker_4" } },
+		{ id = "bandit", community = "bandit", profiles = { "sim_default_bandit_0", "sim_default_bandit_1", "sim_default_bandit_2", "sim_default_bandit_3", "sim_default_bandit_4" } },
+		{ id = "duty", community = "dolg", profiles = { "sim_default_duty_0", "sim_default_duty_1", "sim_default_duty_2", "sim_default_duty_3", "sim_default_duty_4" } },
+		{ id = "freedom", community = "freedom", profiles = { "sim_default_freedom_0", "sim_default_freedom_1", "sim_default_freedom_2", "sim_default_freedom_3", "sim_default_freedom_4" } },
+		{ id = "military", community = "army", profiles = { "sim_default_military_0", "sim_default_military_1", "sim_default_military_2", "sim_default_military_3", "sim_default_military_4" } },
+		{ id = "monolith", community = "monolith", profiles = { "sim_default_monolith_0", "sim_default_monolith_1", "sim_default_monolith_2", "sim_default_monolith_3", "sim_default_monolith_4" } },
+		{ id = "killer", community = "killer", profiles = { "sim_default_killer_0", "sim_default_killer_1", "sim_default_killer_2", "sim_default_killer_3", "sim_default_killer_4" } },
+		{ id = "zombied", community = "zombied", profiles = { "sim_default_zombied_1", "sim_default_zombied_2", "sim_default_zombied_3", "sim_default_zombied_4" } }
+	}
+}
+local state = { pending_visibility = {} }
+local impl = {}
+
+function impl.parse(params)
+	for key in pairs(params) do
+		if key ~= "minimum_count" and key ~= "maximum_count" then return nil, "parameter_not_supported" end
+	end
+	local minimum_text = tostring(params.minimum_count or "1")
+	local maximum_text = tostring(params.maximum_count or "10")
+	if not minimum_text:match("^%d+$") or not maximum_text:match("^%d+$") then return nil, "hostile_group_count_invalid" end
+	local minimum_count, maximum_count = tonumber(minimum_text), tonumber(maximum_text)
+	if minimum_count == nil or maximum_count == nil or minimum_count < 1 or maximum_count > 99 or minimum_count > maximum_count then
+		return nil, "hostile_group_count_invalid"
+	end
+	return { minimum_count = minimum_count, maximum_count = maximum_count }
+end
+
+function impl.valid_vertex(vertex_id)
+	return vertex_id ~= nil and vertex_id ~= C.INVALID_VERTEX and level.valid_vertex_id(vertex_id)
+end
+
+function impl.find_points(actor, count)
+	local actor_position = actor:position()
+	local start_vertex = actor:level_vertex_id()
+	if not impl.valid_vertex(start_vertex) then return nil, "actor_vertex_invalid" end
+	local points, used = {}, {}
+	local base_angle = math.random() * math.pi * 2
+	local attempts = math.max(C.ATTEMPTS, count * 24)
+	for attempt = 0, attempts - 1 do
+		local radius = C.RADII[(attempt % #C.RADII) + 1]
+		local angle = base_angle + math.rad((attempt * 137.507764) % 360)
+		local direction = vector():set(math.cos(angle), 0, math.sin(angle))
+		local vertex_id = level.vertex_in_direction(start_vertex, direction, radius)
+		if impl.valid_vertex(vertex_id) and not used[vertex_id] then
+			local snapped = level.vertex_position(vertex_id)
+			local dx, dz = snapped.x - actor_position.x, snapped.z - actor_position.z
+			local distance_sqr = dx * dx + dz * dz
+			if distance_sqr >= 15 * 15 and distance_sqr <= 25 * 25 and math.abs(snapped.y - actor_position.y) <= 4 then
+				used[vertex_id] = true
+				points[#points + 1] = { vertex_id = vertex_id, position = vector():set(snapped.x, snapped.y + 0.10, snapped.z) }
+				if #points == count then return points end
+			end
+		end
+	end
+	return nil, "safe_spawn_vertices_unavailable"
+end
+
+function impl.candidate_is_hostile(actor, candidate)
+	local ok, attitude = pcall(function()
+		return relation_registry.community_relation(candidate.community, actor:character_community()) +
+			relation_registry.community_goodwill(candidate.community, actor:id())
+	end)
+	return ok and tonumber(attitude) ~= nil and attitude <= C.ENEMY_THRESHOLD
+end
+
+function impl.eligible_candidates(actor, ini)
+	local result = {}
+	for _, candidate in ipairs(C.CANDIDATES) do
+		if impl.candidate_is_hostile(actor, candidate) then
+			local profiles = {}
+			for _, profile in ipairs(candidate.profiles) do
+				if ini:section_exist(profile) then profiles[#profiles + 1] = profile end
+			end
+			if #profiles > 0 then result[#result + 1] = { id = candidate.id, profiles = profiles } end
+		end
+	end
+	return result
+end
+
+function impl.rollback(created)
+	local complete, life = true, alife()
+	for index = #created, 1, -1 do
+		if not pcall(function() life:release(created[index], true) end) then complete = false end
+	end
+	return complete
+end
+
+function impl.can_execute(context, params)
+	local options, error_code = impl.parse(params)
+	if options == nil then return false, "rejected", error_code end
+	if alife == nil or alife() == nil then return false, "deferred", "alife_unavailable" end
+	local ini = system_ini()
+	if ini == nil then return false, "deferred", "system_ini_unavailable" end
+	local candidates = impl.eligible_candidates(context.actor, ini)
+	if #candidates == 0 then return false, "rejected", "hostile_npc_faction_unavailable" end
+	context.action_options, context.action_candidates = options, candidates
+	return true
+end
+
+function impl.execute(context, params)
+	local options = context.action_options or impl.parse(params)
+	if options == nil then return "rejected", "hostile_group_parameters_invalid" end
+	local count = math.random(options.minimum_count, options.maximum_count)
+	local points, point_error = impl.find_points(context.actor, count)
+	if points == nil then return "deferred", point_error end
+	local candidates = context.action_candidates or {}
+	if #candidates == 0 then return "rejected", "hostile_npc_faction_unavailable" end
+	local candidate = candidates[math.random(1, #candidates)]
+	local created = {}
+	for index = 1, count do
+		local profile = candidate.profiles[math.random(1, #candidate.profiles)]
+		local point = points[index]
+		local ok, object = pcall(function()
+			return alife():create(profile, point.position, point.vertex_id, context.actor:game_vertex_id())
+		end)
+		if not ok then
+			impl.rollback(created)
+			return "uncertain", "hostile_npc_spawn_failed_state_unknown"
+		end
+		if object == nil then
+			if not impl.rollback(created) then return "uncertain", "hostile_npc_spawn_failed_rollback_incomplete" end
+			return "rejected", "hostile_npc_spawn_failed_rolled_back"
+		end
+		created[#created + 1] = object
+		local id_ok, object_id = pcall(function() return object.id end)
+		if id_ok and object_id ~= nil then
+			state.pending_visibility[object_id] =
+				(tonumber(context.now) or time_global()) + C.VISIBILITY_MS
+		end
+	end
+	impl.update(tonumber(context.now) or time_global())
+	return "executed", "spawned_random_hostile_npcs_" .. tostring(count) .. "_" .. candidate.id
+end
+
+function impl.update(now)
+	local actor, life = db and db.actor or nil, alife and alife() or nil
+	for object_id, expires_at in pairs(state.pending_visibility) do
+		local object = actor and level.object_by_id(object_id) or nil
+		if object ~= nil then
+			pcall(function() object:make_object_visible_somewhen(actor) end)
+			state.pending_visibility[object_id] = nil
+		elseif now >= expires_at or life == nil or life:object(object_id, true) == nil then
+			state.pending_visibility[object_id] = nil
+		end
+	end
+end
+
+function impl.on_game_load() state.pending_visibility = {} end
+
+pf_donation_registry.register(ACTION_ID, {
+	source = "scripts\\pf_donation_action_spawn_random_hostile_squad.script",
+	can_execute = impl.can_execute, execute = impl.execute,
+	update = impl.update, on_game_load = impl.on_game_load
+})

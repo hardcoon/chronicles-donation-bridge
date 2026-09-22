@@ -1,0 +1,164 @@
+--[[CDB_PRESET_V1
+{"schemaVersion":1,"handlerId":"spawn_npcs","displayName":"Заспавнить NPC","description":"Создаёт одну или несколько групп NPC выбранных группировок и силы за одно срабатывание. До 99 в каждой строке; большие отряды могут сильно нагрузить игру.","category":"npc_mutants","cooldownSeconds":1,"parameterDefinitions":[{"key":"faction","displayName":"Группировка","kind":"Choice","options":["stalker","bandit","duty","freedom","military","monolith","killer"],"defaultValue":"bandit","catalogKind":"npc_faction"},{"key":"strength","displayName":"Сила","kind":"Choice","options":["weak","medium","strong"],"defaultValue":"medium"},{"key":"count","displayName":"Количество (1–99)","kind":"Integer","minimum":1,"maximum":99,"defaultValue":"1"}],"parameters":{"faction":"bandit","strength":"medium","count":"1"},"spawnGroups":[{"variantId":"bandit","strength":"medium","count":1}]}
+CDB_PRESET_END]]
+local ACTION_ID = "spawn_npcs"
+local C = {
+	INVALID_VERTEX = 4294967295,
+	RADII = { 15, 17.5, 20, 22.5, 25 },
+	ATTEMPTS = 240,
+	SECTIONS = {
+		stalker = { weak = "sim_default_stalker_0", medium = "sim_default_stalker_2",
+			strong = "sim_default_stalker_4" },
+		bandit = { weak = "sim_default_bandit_0", medium = "sim_default_bandit_2",
+			strong = "sim_default_bandit_4" },
+		duty = { weak = "sim_default_duty_0", medium = "sim_default_duty_2",
+			strong = "sim_default_duty_4" },
+		freedom = { weak = "sim_default_freedom_0", medium = "sim_default_freedom_2",
+			strong = "sim_default_freedom_4" },
+		military = { weak = "sim_default_military_0", medium = "sim_default_military_2",
+			strong = "sim_default_military_4" },
+		monolith = { weak = "sim_default_monolith_0", medium = "sim_default_monolith_2",
+			strong = "sim_default_monolith_4" },
+		killer = { weak = "sim_default_killer_0", medium = "sim_default_killer_2",
+			strong = "sim_default_killer_4" }
+	}
+}
+local impl = {}
+
+function impl.parse_entry(faction, strength, count_text)
+	faction = tostring(faction or "bandit"):lower()
+	strength = tostring(strength or "medium"):lower()
+	count_text = tostring(count_text or "1")
+	if not count_text:match("^%d+$") then return nil, "npc_count_invalid" end
+	local count = tonumber(count_text)
+	if count == nil or count < 1 or count > 99 then return nil, "npc_count_invalid" end
+	local strengths = C.SECTIONS[faction]
+	local section = strengths and strengths[strength] or nil
+	if section == nil then return nil, "npc_variant_not_allowed" end
+	return { faction = faction, strength = strength, count = count, section = section }
+end
+
+function impl.parse(params)
+	for key in pairs(params) do
+		if key ~= "groups" and key ~= "faction" and key ~= "strength" and key ~= "count" then
+			return nil, "parameter_not_supported"
+		end
+	end
+	local entries, total = {}, 0
+	if params.groups ~= nil then
+		local bundle = tostring(params.groups)
+		if bundle == "" or #bundle > 4000 or string.sub(bundle, 1, 1) == ";" or
+			string.sub(bundle, -1) == ";" or string.find(bundle, ";;", 1, true) then
+			return nil, "npc_group_bundle_invalid"
+		end
+		for token in string.gmatch(bundle, "([^;]+)") do
+			local faction, strength, count_text = string.match(token, "^([%w_.%-]+)%*([%w_.%-]+)%*(%d+)$")
+			if faction == nil then return nil, "npc_group_bundle_invalid" end
+			local entry, error_code = impl.parse_entry(faction, strength, count_text)
+			if entry == nil then return nil, error_code end
+			entries[#entries + 1] = entry
+			total = total + entry.count
+		end
+		if #entries == 0 then return nil, "npc_group_bundle_empty" end
+	else
+		local entry, error_code = impl.parse_entry(params.faction, params.strength, params.count)
+		if entry == nil then return nil, error_code end
+		entries[1], total = entry, entry.count
+	end
+	return { entries = entries, total = total }
+end
+
+function impl.valid_vertex(vertex_id)
+	return vertex_id ~= nil and vertex_id ~= C.INVALID_VERTEX and
+		level.valid_vertex_id(vertex_id)
+end
+
+function impl.find_points(actor, count)
+	local actor_position = actor:position()
+	local start_vertex = actor:level_vertex_id()
+	if not impl.valid_vertex(start_vertex) then return nil, "actor_vertex_invalid" end
+	local points, used = {}, {}
+	local base_angle = math.random() * math.pi * 2
+	local attempts = math.max(C.ATTEMPTS, count * 24)
+	for attempt = 0, attempts - 1 do
+		local radius = C.RADII[(attempt % #C.RADII) + 1]
+		local angle = base_angle + math.rad((attempt * 137.507764) % 360)
+		local direction = vector():set(math.cos(angle), 0, math.sin(angle))
+		local vertex_id = level.vertex_in_direction(start_vertex, direction, radius)
+		if impl.valid_vertex(vertex_id) and not used[vertex_id] then
+			local snapped = level.vertex_position(vertex_id)
+			local dx, dz = snapped.x - actor_position.x, snapped.z - actor_position.z
+			local distance_sqr = dx * dx + dz * dz
+			if distance_sqr >= 15 * 15 and distance_sqr <= 25 * 25 and
+				math.abs(snapped.y - actor_position.y) <= 4 then
+				used[vertex_id] = true
+				points[#points + 1] = { vertex_id = vertex_id,
+					position = vector():set(snapped.x, snapped.y + 0.10, snapped.z) }
+				if #points == count then return points end
+			end
+		end
+	end
+	return nil, "safe_spawn_vertices_unavailable"
+end
+
+function impl.rollback(created)
+	local complete = true
+	for index = #created, 1, -1 do
+		local ok = pcall(function() alife():release(created[index], true) end)
+		if not ok then complete = false end
+	end
+	return complete
+end
+
+function impl.can_execute(context, params)
+	local options, error_code = impl.parse(params)
+	if options == nil then return false, "rejected", error_code end
+	if alife == nil or alife() == nil then
+		return false, "deferred", "alife_unavailable"
+	end
+	local ini = system_ini()
+	for _, entry in ipairs(options.entries) do
+		if ini == nil or not ini:section_exist(entry.section) then
+			return false, "rejected", "npc_section_missing"
+		end
+	end
+	context.action_options = options
+	return true
+end
+
+function impl.execute(context, params)
+	local options = context.action_options
+	if options == nil then options = impl.parse(params) end
+	if options == nil then return "rejected", "npc_parameters_invalid" end
+	local points, point_error = impl.find_points(context.actor, options.total)
+	if points == nil then return "deferred", point_error end
+	local created, point_index = {}, 1
+	for _, entry in ipairs(options.entries) do
+		for _ = 1, entry.count do
+			local point = points[point_index]
+			local ok, object = pcall(function()
+				return alife():create(entry.section, point.position, point.vertex_id,
+					context.actor:game_vertex_id())
+			end)
+			if not ok then
+				impl.rollback(created)
+				return "uncertain", "npc_spawn_failed_state_unknown"
+			end
+			if object == nil then
+				if not impl.rollback(created) then
+					return "uncertain", "npc_spawn_failed_rollback_incomplete"
+				end
+				return "rejected", "npc_spawn_failed_rolled_back"
+			end
+			created[#created + 1] = object
+			point_index = point_index + 1
+		end
+	end
+	return "executed", "spawned_npc_groups_" .. tostring(#options.entries) .. "_" .. tostring(options.total)
+end
+
+pf_donation_registry.register(ACTION_ID, {
+	source = "scripts\\pf_donation_action_spawn_npcs.script",
+	can_execute = impl.can_execute,
+	execute = impl.execute
+})

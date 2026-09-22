@@ -1,0 +1,123 @@
+--[[CDB_PRESET_V1
+{"schemaVersion":1,"handlerId":"damage_equipment","displayName":"Повредить экипировку","description":"Уменьшает текущее состояние брони, шлема или обоих предметов на указанное число процентных пунктов.","category":"inventory","cooldownSeconds":1,"parameterDefinitions":[{"key":"target","displayName":"Что повредить","kind":"Choice","options":["outfit","helmet","both"],"optionLabels":{"outfit":"Броня","helmet":"Шлем","both":"Всё вместе"},"defaultValue":"outfit"},{"key":"percent","displayName":"Уменьшить состояние на, %","kind":"Percent","minimum":1,"maximum":100,"defaultValue":"25"}],"parameters":{"target":"outfit","percent":"25"}}
+CDB_PRESET_END]]
+local ACTION_ID = "damage_equipment"
+local C = {
+	TARGET_SLOTS = {
+		outfit = { { name = "outfit", slot = 7 } },
+		helmet = { { name = "helmet", slot = 12 } },
+		both = { { name = "outfit", slot = 7 }, { name = "helmet", slot = 12 } }
+	}
+}
+local impl = {}
+
+function impl.parse(params)
+	for key in pairs(params) do
+		if key ~= "target" and key ~= "percent" then
+			return nil, nil, "parameter_not_supported"
+		end
+	end
+	local target = tostring(params.target or "outfit"):lower()
+	if C.TARGET_SLOTS[target] == nil then return nil, nil, "gear_target_invalid" end
+	local percent = tonumber(params.percent or 25)
+	if percent == nil or percent ~= percent or percent < 1 or percent > 100 then
+		return nil, nil, "gear_damage_percent_invalid"
+	end
+	return target, percent
+end
+
+function impl.protected(item)
+	if item == nil then return true end
+	local section_ok, section = pcall(function() return item:section() end)
+	local ini = system_ini()
+	if not section_ok or section == nil or ini == nil or not ini:section_exist(section) then
+		return true
+	end
+	if type(get_object_story_id) == "function" then
+		local story_ok, story_id = pcall(function() return get_object_story_id(item:id()) end)
+		if not story_ok or story_id ~= nil then return true end
+	end
+	if ini:line_exist(section, "quest_item") and ini:r_bool(section, "quest_item") then
+		return true
+	end
+	if ini:line_exist(section, "can_trade") and not ini:r_bool(section, "can_trade") then
+		return true
+	end
+	return false
+end
+
+function impl.inspect(item, slot, percent)
+	if impl.protected(item) then return nil, "damageable_gear_required" end
+	local ok, current = pcall(function()
+		if type(item.condition) ~= "function" or type(item.set_condition) ~= "function" then
+			error("condition_api_unavailable")
+		end
+		return item:condition()
+	end)
+	current = tonumber(current)
+	if not ok or current == nil or current ~= current then
+		return nil, "gear_condition_unavailable"
+	end
+	current = math.max(0, math.min(1, current))
+	return {
+		item = item,
+		slot = slot,
+		before = current,
+		after = math.max(0, current - percent / 100)
+	}
+end
+
+function impl.prepare(actor, target, percent)
+	local prepared = {}
+	for _, requested in ipairs(C.TARGET_SLOTS[target]) do
+		local slot_ok, item = pcall(function() return actor:item_in_slot(requested.slot) end)
+		if not slot_ok then return nil, "gear_slot_unavailable" end
+		local entry, error_code = impl.inspect(item, requested.slot, percent)
+		if entry ~= nil then
+			prepared[#prepared + 1] = entry
+		elseif target ~= "both" then
+			return nil, error_code
+		end
+	end
+	if #prepared == 0 then return nil, "damageable_gear_required" end
+	return prepared
+end
+
+function impl.can_execute(context, params)
+	local target, percent, error_code = impl.parse(params)
+	if target == nil then return false, "rejected", error_code end
+	local prepared, prepare_error = impl.prepare(context.actor, target, percent)
+	if prepared == nil then return false, "rejected", prepare_error end
+	context.gear_damage_target = target
+	context.gear_damage_percent = percent
+	context.gear_damage_prepared = prepared
+	return true
+end
+
+function impl.execute(context)
+	-- can_execute and execute run synchronously in one registry dispatch. Reuse
+	-- the protected inspection result: a second native slot lookup was both
+	-- unnecessary and could escape from execute as action_execution_failed.
+	local prepared = context.gear_damage_prepared
+	if type(prepared) ~= "table" or #prepared == 0 then
+		return "rejected", "damageable_gear_required"
+	end
+	for _, entry in ipairs(prepared) do
+		local set_ok = pcall(function() entry.item:set_condition(entry.after) end)
+		if not set_ok then return "uncertain", "gear_condition_change_uncertain" end
+		local read_ok, actual = pcall(function() return entry.item:condition() end)
+		actual = tonumber(actual)
+		if not read_ok or actual == nil or actual ~= actual or
+			math.abs(actual - entry.after) > 0.005 then
+			return "uncertain", "gear_condition_result_uncertain"
+		end
+	end
+	return "executed", "equipment_damaged_" .. tostring(context.gear_damage_target) ..
+		"_" .. tostring(#prepared)
+end
+
+pf_donation_registry.register(ACTION_ID, {
+	source = "scripts\\pf_donation_action_damage_equipment.script",
+	can_execute = impl.can_execute,
+	execute = impl.execute
+})

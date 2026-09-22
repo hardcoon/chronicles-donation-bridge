@@ -1,0 +1,565 @@
+--[[CDB_PRESET_V1
+{"schemaVersion":1,"handlerId":"sleep_hours","displayName":"Заставить персонажа поспать","description":"Запускает штатное затемнение и плавное пробуждение, сдвигает время и применяет обычные последствия сна.","category":"player_state","cooldownSeconds":1,"parameterDefinitions":[{"key":"hours","displayName":"Продолжительность сна, часов","kind":"Integer","minimum":1,"maximum":24,"defaultValue":"6"}],"parameters":{"hours":"6"}}
+CDB_PRESET_END]]
+local ACTION_ID = "sleep_hours"
+local STATE_KEY = "__pf_donation_sleep_hours_v2"
+local PSTOR_ACTIVE = "pf_donation_sleep_active_v1"
+local PSTOR_MUSIC = "pf_donation_sleep_music_v1"
+local PSTOR_EFFECTS = "pf_donation_sleep_effects_v1"
+local C = { DEFAULT_HOURS = 6, TIME_TOLERANCE_SECONDS = 2,
+	CAM_EFFECT_ID = 19782, PP_EFFECT_ID = 19783, WATCHDOG_MS = 30000 }
+local state = rawget(_G, STATE_KEY)
+local impl = {}
+
+if type(state) ~= "table" then
+	state = { phase = "idle", recover_pending = false }
+	rawset(_G, STATE_KEY, state)
+end
+
+function impl.reset_state()
+	state.phase = "idle"
+	state.recover_pending = false
+	state.started_at = 0
+	state.hours = nil
+	state.satiety_rate = nil
+	state.thirst_rate = nil
+	state.sleep_factor = nil
+	state.actor_id = nil
+	state.music_volume = nil
+	state.effects_volume = nil
+	state.ui_disabled = false
+	state.cam_active = false
+	state.pp_active = false
+	state.info_owned = false
+	state.audio_muted = false
+	state.time_applied = false
+end
+
+if state.phase == nil then impl.reset_state() end
+
+function impl.log(message)
+	if type(printf) == "function" then
+		pcall(printf, "pf_donation_sleep_hours: %s", tostring(message or "unknown"))
+	end
+end
+
+function impl.parse(params)
+	for key in pairs(params) do
+		if key ~= "hours" then return nil, "parameter_not_supported" end
+	end
+	local text = tostring(params.hours or C.DEFAULT_HOURS)
+	if #text > 2 or not text:match("^%d+$") then return nil, "sleep_hours_invalid" end
+	local hours = tonumber(text)
+	if hours == nil or hours < 1 or hours > 24 then
+		return nil, "sleep_hours_invalid"
+	end
+	return hours
+end
+
+function impl.valid_rate(value)
+	return type(value) == "number" and value == value and value >= 0 and value <= 1
+end
+
+function impl.valid_volume(value)
+	return type(value) == "number" and value == value and value >= 0 and value <= 1
+end
+
+function impl.read_sleep_needs()
+	if system_ini == nil then return nil end
+	local ok, satiety_rate, thirst_rate, sleep_factor = pcall(function()
+		local ini = system_ini()
+		return ini:r_float("actor_condition", "satiety_v"),
+			ini:r_float("actor_condition", "thirst_v"),
+			ini:r_float("actor_condition", "pf_sleep_needs_factor")
+	end)
+	if not ok or not impl.valid_rate(satiety_rate) or
+		not impl.valid_rate(thirst_rate) or not impl.valid_rate(sleep_factor) then
+		return nil
+	end
+	return { satiety_rate = satiety_rate, thirst_rate = thirst_rate,
+		sleep_factor = sleep_factor }
+end
+
+function impl.read_surge_manager()
+	if surge_manager == nil or type(surge_manager.get_surge_manager) ~= "function" or
+		type(surge_manager.is_started) ~= "function" then return nil end
+	local ok, manager = pcall(surge_manager.get_surge_manager)
+	if not ok or manager == nil or type(manager.started) ~= "boolean" or
+		type(manager.time_forwarded) ~= "boolean" then return nil end
+	local state_ok, started = pcall(surge_manager.is_started)
+	if not state_ok then return nil end
+	return manager, started == true or manager.started == true
+end
+
+function impl.read_weather_manager()
+	if level_weathers == nil or type(level_weathers.get_weather_manager) ~= "function" then
+		return nil
+	end
+	local ok, manager = pcall(level_weathers.get_weather_manager)
+	if not ok or manager == nil or type(manager.forced_weather_change) ~= "function" then
+		return nil
+	end
+	return manager
+end
+
+function impl.time_available()
+	if game == nil or type(game.get_game_time) ~= "function" or level == nil or
+		type(level.change_game_time) ~= "function" then return false end
+	local ok, difference = pcall(function()
+		local now = game.get_game_time()
+		return now:diffSec(now)
+	end)
+	return ok and type(difference) == "number"
+end
+
+function impl.sleep_block_reason(actor)
+	local ok, bleeding, radiation = pcall(function()
+		return actor.bleeding, actor.radiation
+	end)
+	if not ok or type(bleeding) ~= "number" or bleeding ~= bleeding or
+		type(radiation) ~= "number" or radiation ~= radiation then
+		return "sleep_condition_unavailable"
+	end
+	if bleeding > 0 and radiation > 0 then
+		return "sleep_blocked_by_bleeding_and_radiation"
+	end
+	if bleeding > 0 then return "sleep_blocked_by_bleeding" end
+	if radiation > 0 then return "sleep_blocked_by_radiation" end
+	return nil
+end
+
+function impl.cutscene_active()
+	if db == nil or type(db.storage) ~= "table" then return false end
+	for _, storage in pairs(db.storage) do
+		if type(storage) == "table" and storage.active_scheme == "sr_cutscene" then
+			return true
+		end
+	end
+	return false
+end
+
+function impl.actor_ready(actor, allow_owned_sleep)
+	if actor == nil or db == nil or db.actor ~= actor then return false, "actor_unavailable" end
+	if level == nil or type(level.present) ~= "function" or not level.present() then
+		return false, "level_unavailable"
+	end
+	local ok, alive, in_car, talking, native_sleep = pcall(function()
+		return actor:alive(), actor:IsInCar(), actor:is_talking(),
+			actor:has_info("sleep_active") or
+			(not allow_owned_sleep and actor:has_info("actor_is_sleeping"))
+	end)
+	if not ok then return false, "actor_state_unavailable" end
+	if not alive then return false, "actor_dead" end
+	if in_car then return false, "actor_in_vehicle" end
+	if talking then return false, "actor_in_dialog" end
+	if native_sleep then return false, "actor_sleeping" end
+	if impl.cutscene_active() then return false, "actor_in_cutscene" end
+	local block_reason = impl.sleep_block_reason(actor)
+	if block_reason ~= nil then return false, block_reason end
+	return true
+end
+
+function impl.actor_present(actor)
+	if actor == nil or db == nil or db.actor ~= actor then return false end
+	if level == nil or type(level.present) ~= "function" or not level.present() then
+		return false
+	end
+	local ok, alive, actor_id = pcall(function() return actor:alive(), actor:id() end)
+	return ok and alive == true and
+		(state.actor_id == nil or actor_id == state.actor_id)
+end
+
+function impl.read_console()
+	if type(get_console) ~= "function" then return nil end
+	local ok, console, music_volume, effects_volume = pcall(function()
+		local value = get_console()
+		return value, value:get_float("snd_volume_music"),
+			value:get_float("snd_volume_eff")
+	end)
+	if not ok or console == nil or not impl.valid_volume(music_volume) or
+		not impl.valid_volume(effects_volume) then return nil end
+	return console, music_volume, effects_volume
+end
+
+function impl.visual_api_available()
+	return xr_effects ~= nil and type(xr_effects.disable_ui) == "function" and
+		type(xr_effects.enable_ui) == "function" and level ~= nil and
+		type(level.add_cam_effector) == "function" and
+		type(level.add_pp_effector) == "function" and
+		type(level.remove_cam_effector) == "function" and
+		type(level.remove_pp_effector) == "function" and
+		type(level.stop_weather_fx) == "function" and
+		type(disable_info) == "function" and xr_logic ~= nil and
+		type(xr_logic.pstor_store) == "function" and
+		type(xr_logic.pstor_retrieve) == "function"
+end
+
+function impl.read_persisted(actor)
+	if actor == nil or xr_logic == nil or type(xr_logic.pstor_retrieve) ~= "function" then
+		return nil
+	end
+	local ok, active, music_volume, effects_volume = pcall(function()
+		return xr_logic.pstor_retrieve(actor, PSTOR_ACTIVE, false),
+			xr_logic.pstor_retrieve(actor, PSTOR_MUSIC, -1),
+			xr_logic.pstor_retrieve(actor, PSTOR_EFFECTS, -1)
+	end)
+	if not ok then return nil end
+	return active == true, tonumber(music_volume), tonumber(effects_volume)
+end
+
+function impl.persist_owner(actor, active, music_volume, effects_volume)
+	if actor == nil or xr_logic == nil or type(xr_logic.pstor_store) ~= "function" or
+		type(xr_logic.pstor_retrieve) ~= "function" then return false end
+	local ok, stored = pcall(function()
+		if active then
+			xr_logic.pstor_store(actor, PSTOR_MUSIC, music_volume)
+			xr_logic.pstor_store(actor, PSTOR_EFFECTS, effects_volume)
+		end
+		xr_logic.pstor_store(actor, PSTOR_ACTIVE, active == true)
+		return xr_logic.pstor_retrieve(actor, PSTOR_ACTIVE, false)
+	end)
+	return ok and stored == (active == true)
+end
+
+function impl.restore_audio(music_volume, effects_volume)
+	if not impl.valid_volume(music_volume) or not impl.valid_volume(effects_volume) then
+		return false
+	end
+	local console = impl.read_console()
+	if console == nil then return false end
+	return pcall(function()
+		console:execute("snd_volume_music " .. tostring(music_volume))
+		console:execute("snd_volume_eff " .. tostring(effects_volume))
+	end)
+end
+
+function impl.cleanup(mark_tutorial)
+	local actor = db and db.actor or nil
+	local persisted, persisted_music, persisted_effects = impl.read_persisted(actor)
+	local owned = persisted == true or state.info_owned == true or state.phase ~= "idle"
+	local all_ok = true
+	if state.cam_active == true then
+		if level == nil or type(level.remove_cam_effector) ~= "function" or
+			not pcall(level.remove_cam_effector, C.CAM_EFFECT_ID) then
+			all_ok = false
+		else
+			state.cam_active = false
+		end
+	end
+	if state.pp_active == true then
+		if level == nil or type(level.remove_pp_effector) ~= "function" or
+			not pcall(level.remove_pp_effector, C.PP_EFFECT_ID) then
+			all_ok = false
+		else
+			state.pp_active = false
+		end
+	end
+	if state.ui_disabled == true then
+		if actor == nil or xr_effects == nil or type(xr_effects.enable_ui) ~= "function" or
+			not pcall(xr_effects.enable_ui, actor, nil) then
+			all_ok = false
+		else
+			state.ui_disabled = false
+		end
+	end
+	if state.audio_muted == true or persisted == true then
+		local music_volume = state.music_volume
+		local effects_volume = state.effects_volume
+		if not impl.valid_volume(music_volume) then music_volume = persisted_music end
+		if not impl.valid_volume(effects_volume) then effects_volume = persisted_effects end
+		if not impl.restore_audio(music_volume, effects_volume) then
+			all_ok = false
+		else
+			state.audio_muted = false
+		end
+	end
+	if owned then
+		if actor == nil or type(disable_info) ~= "function" or
+			not pcall(disable_info, "actor_is_sleeping") then
+			all_ok = false
+		else
+			state.info_owned = false
+		end
+		if mark_tutorial and state.time_applied == true and actor ~= nil then
+			if not pcall(function() actor:give_info_portion("tutorial_sleep") end) then
+				all_ok = false
+			end
+		end
+	end
+	if persisted == true or state.phase ~= "idle" then
+		if not impl.persist_owner(actor, false) then all_ok = false end
+	end
+	if all_ok then
+		impl.reset_state()
+	else
+		state.phase = "cleanup"
+		state.recover_pending = true
+	end
+	return all_ok
+end
+
+function impl.can_execute(context, params)
+	local hours, error_code = impl.parse(params)
+	if hours == nil then return false, "rejected", error_code end
+	if state.phase ~= "idle" or state.recover_pending == true then
+		return false, "deferred", "sleep_effect_already_active"
+	end
+	local actor_ok, actor_reason = impl.actor_ready(context.actor, false)
+	if not actor_ok then return false, "deferred", actor_reason end
+	if not impl.time_available() then return false, "deferred", "game_time_unavailable" end
+	local needs = impl.read_sleep_needs()
+	if needs == nil then return false, "rejected", "sleep_needs_config_missing" end
+	local manager, surge_started = impl.read_surge_manager()
+	if manager == nil then return false, "deferred", "surge_manager_unavailable" end
+	if surge_started then return false, "deferred", "sleep_blocked_by_surge" end
+	if type(surge_manager.resurrect_skip_message) ~= "function" then
+		return false, "deferred", "surge_sleep_api_unavailable"
+	end
+	if impl.read_weather_manager() == nil then
+		return false, "deferred", "weather_manager_unavailable"
+	end
+	if not impl.visual_api_available() then
+		return false, "deferred", "sleep_visual_api_unavailable"
+	end
+	local console, music_volume, effects_volume = impl.read_console()
+	if console == nil then return false, "deferred", "sleep_audio_api_unavailable" end
+	local persisted = impl.read_persisted(context.actor)
+	if persisted == nil then return false, "deferred", "sleep_recovery_state_unavailable" end
+	if persisted == true then
+		state.recover_pending = true
+		return false, "deferred", "sleep_recovery_pending"
+	end
+	context.action_options = { hours = hours, needs = needs,
+		music_volume = music_volume, effects_volume = effects_volume }
+	return true
+end
+
+function impl.begin_visual_sleep(actor, options, now)
+	if not impl.persist_owner(actor, true, options.music_volume, options.effects_volume) then
+		return false, "sleep_recovery_state_unavailable"
+	end
+	state.phase = "starting"
+	state.started_at = now
+	state.hours = options.hours
+	state.satiety_rate = options.needs.satiety_rate
+	state.thirst_rate = options.needs.thirst_rate
+	state.sleep_factor = options.needs.sleep_factor
+	state.music_volume = options.music_volume
+	state.effects_volume = options.effects_volume
+	local id_ok, actor_id = pcall(function() return actor:id() end)
+	if id_ok then state.actor_id = actor_id end
+	local ok = pcall(xr_effects.disable_ui, actor, nil)
+	if ok then state.ui_disabled = true end
+	if ok then
+		ok = pcall(level.add_cam_effector, "camera_effects\\sleep.anm",
+			C.CAM_EFFECT_ID, false,
+			"pf_donation_action_sleep_hours.sleep_midpoint_callback")
+		if ok then state.cam_active = true end
+	end
+	if ok then
+		ok = pcall(level.add_pp_effector, "sleep_fade.ppe", C.PP_EFFECT_ID, false)
+		if ok then state.pp_active = true end
+	end
+	if ok then
+		ok = pcall(function() actor:give_info_portion("actor_is_sleeping") end)
+		if ok then state.info_owned = true end
+	end
+	if ok then
+		state.audio_muted = true
+		local console = impl.read_console()
+		ok = console ~= nil and pcall(function()
+			console:execute("snd_volume_music 0")
+			console:execute("snd_volume_eff 0")
+		end)
+	end
+	if ok and surge_manager ~= nil and
+		type(surge_manager.resurrect_skip_message) == "function" then
+		ok = pcall(surge_manager.resurrect_skip_message)
+	end
+	if not ok then
+		local cleaned = impl.cleanup(false)
+		return false, cleaned and "sleep_visual_start_failed" or
+			"sleep_visual_start_and_cleanup_failed"
+	end
+	state.phase = "fading"
+	return true
+end
+
+function impl.execute(context, params)
+	if context.actor == nil then return "deferred", "actor_unavailable" end
+	local options = context.action_options
+	if options == nil then
+		local allowed, status, reason = impl.can_execute(context, params)
+		if not allowed then return status, reason end
+		options = context.action_options
+	end
+	local started, error_code = impl.begin_visual_sleep(context.actor, options,
+		context.now or (time_global and time_global() or 0))
+	if not started then
+		if error_code == "sleep_visual_start_and_cleanup_failed" then
+			return "uncertain", error_code
+		end
+		return "rejected", error_code
+	end
+	-- Camera callbacks apply the time jump only after the screen has faded.
+	-- The bridge protocol acknowledges the successfully started sequence here;
+	-- it has no second, asynchronous result frame for the wake-up callback.
+	return "executed", "sleep_visual_started_hours_" .. tostring(options.hours)
+end
+
+function impl.midpoint()
+	if state.phase ~= "fading" then return end
+	local actor = db and db.actor or nil
+	local actor_ok, actor_reason = impl.actor_ready(actor, true)
+	if not actor_ok then
+		impl.log("midpoint_aborted_" .. tostring(actor_reason))
+		state.phase = "cleanup"
+		impl.cleanup(false)
+		return
+	end
+	if state.actor_id ~= nil then
+		local id_ok, actor_id = pcall(function() return actor:id() end)
+		if not id_ok or actor_id ~= state.actor_id then
+			impl.log("midpoint_aborted_actor_changed")
+			state.phase = "cleanup"
+			impl.cleanup(false)
+			return
+		end
+	end
+	local manager, surge_started = impl.read_surge_manager()
+	local weather_manager = impl.read_weather_manager()
+	if manager == nil or weather_manager == nil or surge_started or
+		not impl.time_available() then
+		impl.log("midpoint_aborted_world_state")
+		state.phase = "cleanup"
+		impl.cleanup(false)
+		return
+	end
+	local before_ok, before = pcall(game.get_game_time)
+	if not before_ok or before == nil then
+		state.phase = "cleanup"
+		impl.cleanup(false)
+		return
+	end
+	local wake_started = pcall(level.add_cam_effector, "camera_effects\\sleep.anm",
+		C.CAM_EFFECT_ID, false,
+		"pf_donation_action_sleep_hours.sleep_wake_callback")
+	if not wake_started then
+		state.phase = "cleanup"
+		impl.cleanup(false)
+		return
+	end
+	state.cam_active = true
+	local slept_seconds = state.hours * 60 * 60
+	local changed, elapsed_seconds = pcall(function()
+		level.change_game_time(0, state.hours, 0)
+		state.time_applied = true
+		manager.time_forwarded = true
+		actor.satiety = -(state.satiety_rate * slept_seconds * state.sleep_factor)
+		actor.thirst = -(state.thirst_rate * slept_seconds * state.sleep_factor)
+		actor.power = 1
+		weather_manager:forced_weather_change()
+		if surge_manager.is_started() and weather_manager.weather_fx then
+			level.stop_weather_fx()
+			weather_manager:forced_weather_change()
+		end
+		local after = game.get_game_time()
+		return after:diffSec(before)
+	end)
+	if not changed or type(elapsed_seconds) ~= "number" or
+		math.abs(elapsed_seconds - slept_seconds) > C.TIME_TOLERANCE_SECONDS then
+		impl.log("midpoint_time_or_needs_failed")
+		state.phase = "cleanup"
+		impl.cleanup(false)
+		return
+	end
+	state.started_at = time_global and time_global() or state.started_at
+	state.phase = "waking"
+end
+
+function impl.wake()
+	if state.phase ~= "waking" and state.phase ~= "fading" then return end
+	-- Both non-looping native effects have completed when the second camera
+	-- callback fires. Avoid removing an effector from inside its own callback.
+	state.cam_active = false
+	state.pp_active = false
+	impl.cleanup(true)
+end
+
+function sleep_midpoint_callback()
+	local ok, error_message = pcall(impl.midpoint)
+	if not ok then
+		impl.log("midpoint_callback_failed_" .. tostring(error_message))
+		state.phase = "cleanup"
+		pcall(impl.cleanup, false)
+	end
+end
+
+function sleep_wake_callback()
+	local ok, error_message = pcall(impl.wake)
+	if not ok then
+		impl.log("wake_callback_failed_" .. tostring(error_message))
+		state.phase = "cleanup"
+		pcall(impl.cleanup, false)
+	end
+end
+
+function impl.update(now)
+	if state.recover_pending == true then
+		local actor = db and db.actor or nil
+		if actor == nil then return end
+		local persisted = impl.read_persisted(actor)
+		if persisted == nil then return end
+		if persisted == true or state.phase ~= "idle" then
+			state.phase = "cleanup"
+			impl.cleanup(false)
+		else
+			impl.reset_state()
+		end
+		return
+	end
+	if state.phase == "cleanup" then
+		impl.cleanup(false)
+		return
+	end
+	if state.phase == "idle" then return end
+	if state.started_at == nil or now - state.started_at > C.WATCHDOG_MS then
+		impl.log("visual_sleep_watchdog")
+		state.phase = "cleanup"
+		impl.cleanup(false)
+		return
+	end
+	local actor = db and db.actor or nil
+	local actor_ok
+	if state.phase == "waking" then
+		actor_ok = impl.actor_present(actor)
+	else
+		actor_ok = impl.actor_ready(actor, true)
+	end
+	if not actor_ok then
+		state.phase = "cleanup"
+		impl.cleanup(false)
+	end
+end
+
+function impl.on_game_load()
+	state.recover_pending = true
+	if state.phase ~= "idle" then state.phase = "cleanup" end
+	local actor = db and db.actor or nil
+	if actor == nil then return end
+	local persisted = impl.read_persisted(actor)
+	if persisted == true or state.phase == "cleanup" then
+		state.phase = "cleanup"
+		impl.cleanup(false)
+	elseif persisted == false then
+		impl.reset_state()
+	end
+end
+
+pf_donation_registry.register(ACTION_ID, {
+	source = "scripts\\pf_donation_action_sleep_hours.script",
+	can_execute = impl.can_execute,
+	execute = impl.execute,
+	update = impl.update,
+	on_game_load = impl.on_game_load
+})

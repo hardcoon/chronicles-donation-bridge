@@ -1,0 +1,112 @@
+--[[CDB_PRESET_V1
+{"schemaVersion":1,"handlerId":"trigger_emission","displayName":"Вызвать выброс","description":"Запускает штатный выброс на текущей локации, если он доступен и ещё не идёт.","category":"world","cooldownSeconds":1,"parameterDefinitions":[],"parameters":{}}
+CDB_PRESET_END]]
+local ACTION_ID = "trigger_emission"
+local UNSUPPORTED_LEVELS = { labx8 = true, jupiter_underground = true }
+local impl = {}
+
+function impl.parse(params)
+	for _ in pairs(params) do return nil, "parameter_not_supported" end
+	return {}
+end
+
+function impl.dynamic_cover_supported()
+	if lz_nm_surge_cover == nil or
+		type(lz_nm_surge_cover.is_supported_level) ~= "function" then return false end
+	local ok, supported = pcall(lz_nm_surge_cover.is_supported_level)
+	if not ok then return nil end
+	return supported == true
+end
+
+function impl.cover_available(manager)
+	if type(manager.get_nearest_cover) ~= "function" then return nil end
+	local ok, cover_id = pcall(function() return manager:get_nearest_cover() end)
+	if not ok then return nil end
+	if cover_id ~= nil then return true end
+	return impl.dynamic_cover_supported()
+end
+
+function impl.resolve_manager(context)
+	if context.actor == nil then return nil, "deferred", "actor_unavailable" end
+	if surge_manager == nil or type(surge_manager.get_surge_manager) ~= "function" or
+		type(surge_manager.start_surge) ~= "function" or
+		type(surge_manager.is_started) ~= "function" then
+		return nil, "deferred", "surge_manager_unavailable"
+	end
+	local manager_ok, manager = pcall(surge_manager.get_surge_manager)
+	if not manager_ok or manager == nil or type(manager.condlist) ~= "table" or
+		type(manager.started) ~= "boolean" then
+		return nil, "deferred", "surge_manager_not_ready"
+	end
+	local started_ok, started = pcall(surge_manager.is_started)
+	if not started_ok then return nil, "deferred", "surge_state_unavailable" end
+	if started == true or manager.started == true then
+		return nil, "rejected", "surge_already_started"
+	end
+	if level == nil or type(level.name) ~= "function" then
+		return nil, "deferred", "level_unavailable"
+	end
+	local level_ok, level_name = pcall(level.name)
+	if not level_ok or type(level_name) ~= "string" or level_name == "" then
+		return nil, "deferred", "level_unavailable"
+	end
+	if UNSUPPORTED_LEVELS[level_name] then
+		return nil, "rejected", "surge_level_unsupported"
+	end
+	if xr_logic == nil or type(xr_logic.pick_section_from_condlist) ~= "function" then
+		return nil, "deferred", "surge_conditions_unavailable"
+	end
+	if get_story_object == nil then
+		return nil, "deferred", "surge_conditions_unavailable"
+	end
+	local story_actor_ok, story_actor = pcall(get_story_object, "actor")
+	if not story_actor_ok or story_actor == nil then
+		return nil, "deferred", "surge_conditions_unavailable"
+	end
+	local condition_ok, condition = pcall(
+		xr_logic.pick_section_from_condlist, story_actor, nil, manager.condlist)
+	if not condition_ok then
+		return nil, "deferred", "surge_conditions_unavailable"
+	end
+	if condition ~= "true" then return nil, "rejected", "surge_conditions_blocked" end
+	local cover_available = impl.cover_available(manager)
+	if cover_available == nil then
+		return nil, "deferred", "surge_cover_check_failed"
+	end
+	if not cover_available then return nil, "rejected", "surge_cover_unavailable" end
+	return manager
+end
+
+function impl.can_execute(context, params)
+	local options, error_code = impl.parse(params)
+	if options == nil then return false, "rejected", error_code end
+	local manager, manager_status, manager_error = impl.resolve_manager(context)
+	if manager == nil then return false, manager_status, manager_error end
+	context.emission_manager = manager
+	return true
+end
+
+function impl.execute(context)
+	local manager = context.emission_manager
+	if manager == nil then
+		local manager_status, manager_error
+		manager, manager_status, manager_error = impl.resolve_manager(context)
+		if manager == nil then return manager_status, manager_error end
+	end
+	if manager.started == true then return "rejected", "surge_already_started" end
+	local start_ok = pcall(function() surge_manager.start_surge() end)
+	local state_ok, started = pcall(surge_manager.is_started)
+	if not start_ok or not state_ok then
+		return "uncertain", "surge_start_result_unknown"
+	end
+	if started ~= true or manager.started ~= true then
+		return "rejected", "surge_start_blocked"
+	end
+	return "executed", "surge_started_and_confirmed"
+end
+
+pf_donation_registry.register(ACTION_ID, {
+	source = "scripts\\pf_donation_action_trigger_emission.script",
+	can_execute = impl.can_execute,
+	execute = impl.execute
+})

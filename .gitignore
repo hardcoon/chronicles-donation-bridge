@@ -1,0 +1,45 @@
+# .NET and IDE output
+**/bin/
+**/obj/
+.vs/
+.idea/
+.vscode/
+TestResults/
+artifacts/
+publish/
+
+# Local build/runtime state
+.dotnet-home/
+.nuget/
+*.user
+*.suo
+*.rsuser
+*.log
+*.dmp
+
+# Credentials and machine-local configuration
+.env
+.env.*
+!.env.example
+appsettings.Local.json
+appsettings.local.json
+secrets.json
+tokens.json
+oauth.json
+secrets.dpapi
+*.dpapi
+*.pfx
+*.p12
+
+# Windows/macOS metadata
+Thumbs.db
+ehthumbs.db
+desktop.ini
+.DS_Store
+
+# Restore/editor leftovers
+*.bak
+*.backup
+*.old
+*.orig
+*~

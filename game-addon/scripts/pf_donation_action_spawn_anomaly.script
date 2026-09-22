@@ -1,0 +1,353 @@
+--[[CDB_PRESET_V1
+{"schemaVersion":1,"handlerId":"spawn_anomaly","displayName":"Создать временную аномалию","description":"Создаёт одну временную аномалию на выбранной дальности; 0 м означает прямо под персонажем.","category":"world","cooldownSeconds":1,"parameterDefinitions":[{"key":"type","displayName":"Тип","kind":"Choice","options":["gravitational","electric","thermal","acidic"],"defaultValue":"gravitational","catalogKind":"anomaly"},{"key":"strength","displayName":"Сила","kind":"Choice","options":["weak","medium","strong"],"defaultValue":"medium"},{"key":"distance_meters","displayName":"Дальность, м","kind":"Integer","minimum":0,"maximum":100,"defaultValue":"20"},{"key":"lifetime_seconds","displayName":"Время жизни, с","kind":"Integer","minimum":10,"maximum":300,"defaultValue":"60"}],"parameters":{"type":"gravitational","strength":"medium","distance_meters":"20","lifetime_seconds":"60"}}
+CDB_PRESET_END]]
+local ACTION_ID = "spawn_anomaly"
+local STATE_KEY = "__pf_donation_anomalies_v1"
+local PSTOR_KEY = "pf_donation_active_anomalies_v1"
+local C = {
+	INVALID_VERTEX = 4294967295,
+	ATTEMPTS = 120,
+	MIN_DISTANCE_METERS = 0,
+	MAX_DISTANCE_METERS = 100,
+	DEFAULT_DISTANCE_METERS = 20,
+	MIN_DISTANCE_TOLERANCE_METERS = 1.5,
+	MAX_DISTANCE_TOLERANCE_METERS = 5,
+	MIN_POSITIVE_SEPARATION_METERS = 0.25,
+	MAX_HEIGHT_DELTA_METERS = 4,
+	MIN_LIFETIME_SECONDS = 10,
+	MAX_LIFETIME_SECONDS = 300,
+	DEFAULT_LIFETIME_SECONDS = 60,
+	LOAD_GRACE_MS = 1500,
+	MAX_ACTIVE = 8,
+	MAX_OBJECT_ID = 65534,
+	SECTIONS = {
+		gravitational = { weak = "zone_mine_gravitational_weak",
+			medium = "zone_mine_gravitational_average",
+			strong = "zone_mine_gravitational_strong" },
+		electric = { weak = "zone_mine_electric_weak",
+			medium = "zone_mine_electric_average",
+			strong = "zone_mine_electric_strong" },
+		thermal = { weak = "zone_mine_thermal_weak",
+			medium = "zone_mine_thermal_average",
+			strong = "zone_mine_thermal_strong" },
+		acidic = { weak = "zone_mine_acidic_weak",
+			medium = "zone_mine_acidic_average",
+			strong = "zone_mine_acidic_strong" }
+	}
+}
+local state = rawget(_G, STATE_KEY)
+local impl = {}
+local allowed_sections = {}
+for _, strengths in pairs(C.SECTIONS) do
+	for _, section in pairs(strengths) do allowed_sections[section] = true end
+end
+if type(state) ~= "table" then
+	state = { active = {}, loaded = false, restore_after_ms = 0,
+		persist_dirty = false }
+	rawset(_G, STATE_KEY, state)
+elseif type(state.active) ~= "table" then
+	state.active = {}
+end
+if type(state.loaded) ~= "boolean" then state.loaded = false end
+if type(state.restore_after_ms) ~= "number" then state.restore_after_ms = 0 end
+if type(state.persist_dirty) ~= "boolean" then state.persist_dirty = false end
+
+function impl.parse(params)
+	for key in pairs(params) do
+		if key ~= "type" and key ~= "strength" and key ~= "lifetime_seconds" and
+			key ~= "distance_meters" then
+			return nil, "parameter_not_supported"
+		end
+	end
+	local anomaly_type = tostring(params.type or "gravitational"):lower()
+	local strength = tostring(params.strength or "medium"):lower()
+	local lifetime_text = tostring(params.lifetime_seconds or C.DEFAULT_LIFETIME_SECONDS)
+	local distance_text = tostring(params.distance_meters or C.DEFAULT_DISTANCE_METERS)
+	if not lifetime_text:match("^%d+$") then return nil, "anomaly_lifetime_invalid" end
+	local lifetime_seconds = tonumber(lifetime_text)
+	if lifetime_seconds == nil or lifetime_seconds < C.MIN_LIFETIME_SECONDS or
+		lifetime_seconds > C.MAX_LIFETIME_SECONDS then
+		return nil, "anomaly_lifetime_invalid"
+	end
+	local distance_is_integer = distance_text:match("^%d+$") ~= nil
+	local distance_is_decimal = distance_text:match("^%d+%.%d+$") ~= nil
+	if #distance_text > 8 or (not distance_is_integer and not distance_is_decimal) then
+		return nil, "anomaly_distance_invalid"
+	end
+	local distance_meters = tonumber(distance_text)
+	if distance_meters == nil or distance_meters < C.MIN_DISTANCE_METERS or
+		distance_meters > C.MAX_DISTANCE_METERS then
+		return nil, "anomaly_distance_invalid"
+	end
+	local strengths = C.SECTIONS[anomaly_type]
+	local section = strengths and strengths[strength] or nil
+	if section == nil then return nil, "anomaly_variant_not_allowed" end
+	return { anomaly_type = anomaly_type, strength = strength, section = section,
+		lifetime_seconds = lifetime_seconds, distance_meters = distance_meters }
+end
+
+function impl.valid_vertex(vertex_id)
+	return vertex_id ~= nil and vertex_id ~= C.INVALID_VERTEX and
+		level.valid_vertex_id(vertex_id)
+end
+
+function impl.find_point(actor, distance_meters)
+	local actor_position = actor:position()
+	local start_vertex = actor:level_vertex_id()
+	if not impl.valid_vertex(start_vertex) then return nil, "actor_vertex_invalid" end
+	if distance_meters == 0 then
+		return { vertex_id = start_vertex,
+			position = vector():set(actor_position.x, actor_position.y, actor_position.z),
+			actual_distance_meters = 0 }
+	end
+	local tolerance = math.min(C.MAX_DISTANCE_TOLERANCE_METERS,
+		math.max(C.MIN_DISTANCE_TOLERANCE_METERS, distance_meters * 0.15))
+	local minimum_separation = math.min(C.MIN_POSITIVE_SEPARATION_METERS,
+		distance_meters * 0.5)
+	local minimum_distance = math.max(minimum_separation, distance_meters - tolerance)
+	local maximum_distance = distance_meters + tolerance
+	local base_angle = math.random() * math.pi * 2
+	for attempt = 0, C.ATTEMPTS - 1 do
+		local angle = base_angle + math.rad((attempt * 137.507764) % 360)
+		local direction = vector():set(math.cos(angle), 0, math.sin(angle))
+		local vertex_id = level.vertex_in_direction(start_vertex, direction, distance_meters)
+		if impl.valid_vertex(vertex_id) then
+			local snapped = level.vertex_position(vertex_id)
+			local dx, dz = snapped.x - actor_position.x, snapped.z - actor_position.z
+			local distance_sqr = dx * dx + dz * dz
+			if distance_sqr >= minimum_distance * minimum_distance and
+				distance_sqr <= maximum_distance * maximum_distance and
+				math.abs(snapped.y - actor_position.y) <= C.MAX_HEIGHT_DELTA_METERS then
+				return { vertex_id = vertex_id,
+					position = vector():set(snapped.x, snapped.y + 0.10, snapped.z),
+					actual_distance_meters = math.sqrt(distance_sqr) }
+			end
+		end
+	end
+	return nil, "safe_anomaly_vertex_unavailable"
+end
+function impl.active_count()
+	local count = 0
+	for _ in pairs(state.active) do count = count + 1 end
+	return count
+end
+function impl.active_ids()
+	local ids = {}
+	for object_id in pairs(state.active) do ids[#ids + 1] = object_id end
+	table.sort(ids)
+	return ids
+end
+function impl.encode_records()
+	local encoded = {}
+	for _, object_id in ipairs(impl.active_ids()) do
+		local record = state.active[object_id]
+		encoded[#encoded + 1] = string.format("%d|%s|%.3f|%.3f|%.3f",
+			object_id, record.section, record.x, record.y, record.z)
+	end
+	return table.concat(encoded, ";")
+end
+function impl.persist_records()
+	if db == nil or db.actor == nil or xr_logic == nil or
+		type(xr_logic.pstor_store) ~= "function" then
+		state.persist_dirty = true
+		return false
+	end
+	local encoded = impl.encode_records()
+	local ok = pcall(xr_logic.pstor_store, db.actor, PSTOR_KEY, encoded)
+	state.persist_dirty = not ok
+	return ok
+end
+function impl.valid_coordinate(value)
+	return value ~= nil and value == value and math.abs(value) <= 1000000
+end
+function impl.decode_records(encoded)
+	local records = {}
+	local seen = {}
+	if type(encoded) ~= "string" or #encoded > 2048 then return nil, false end
+	if encoded == "" then return records, true end
+	if encoded:sub(1, 1) == ";" or encoded:sub(-1) == ";" or
+		encoded:find(";;", 1, true) then return nil, false end
+	for row in encoded:gmatch("[^;]+") do
+		local fields = {}
+		for value in row:gmatch("[^|]+") do fields[#fields + 1] = value end
+		if #fields ~= 5 or #fields[1] > 10 or #fields[2] > 64 then return nil, false end
+		local object_id = tonumber(fields[1])
+		local x, y, z = tonumber(fields[3]), tonumber(fields[4]), tonumber(fields[5])
+		if object_id == nil or object_id ~= math.floor(object_id) or object_id <= 0 or
+			object_id > C.MAX_OBJECT_ID or seen[object_id] or #records >= C.MAX_ACTIVE or
+			allowed_sections[fields[2]] ~= true or not impl.valid_coordinate(x) or
+			not impl.valid_coordinate(y) or not impl.valid_coordinate(z) then
+			return nil, false
+		end
+		seen[object_id] = true
+		records[#records + 1] = { id = object_id, section = fields[2],
+			x = x, y = y, z = z, expires_at = 0 }
+	end
+	return records, true
+end
+function impl.matches_record(object, record)
+	if object == nil then return false end
+	local section_ok, section = pcall(function() return object:section_name() end)
+	if not section_ok then return nil end
+	if section ~= record.section then return false end
+	local position_ok, x, y, z = pcall(function()
+		return object.position.x, object.position.y, object.position.z
+	end)
+	if not position_ok or not impl.valid_coordinate(x) or
+		not impl.valid_coordinate(y) or not impl.valid_coordinate(z) then return nil end
+	local dx, dy, dz = x - record.x, y - record.y, z - record.z
+	return dx * dx + dy * dy + dz * dz <= 1
+end
+function impl.forget_record(object_id, persist)
+	state.active[object_id] = nil
+	if persist ~= false then impl.persist_records() end
+end
+function impl.forget_or_release(object_id, record, persist)
+	local simulator = alife and alife() or nil
+	if simulator == nil then return false end
+	local ok, object = pcall(function() return simulator:object(object_id, true) end)
+	if not ok then return false end
+	local matches = impl.matches_record(object, record)
+	if matches == nil then return false end
+	if matches then
+		local released = pcall(function() simulator:release(object, true) end)
+		if not released then return false end
+	end
+	impl.forget_record(object_id, persist)
+	return true
+end
+function impl.release_created(object)
+	local simulator = alife and alife() or nil
+	if simulator == nil or object == nil then return false end
+	return pcall(function() simulator:release(object, true) end)
+end
+function impl.restore_and_cleanup()
+	if state.loaded then
+		if state.persist_dirty then return impl.persist_records() end
+		return true
+	end
+	local now = time_global and time_global() or 0
+	if now < state.restore_after_ms then return false end
+	if db == nil or db.actor == nil or xr_logic == nil or
+		type(xr_logic.pstor_retrieve) ~= "function" then return false end
+	if alife == nil or alife() == nil then return false end
+	local ok, encoded = pcall(xr_logic.pstor_retrieve, db.actor, PSTOR_KEY, "")
+	if not ok then return false end
+	local records, valid = impl.decode_records(encoded)
+	if not valid then return false end
+	state.active = {}
+	for _, record in ipairs(records) do
+		state.active[record.id] = record
+	end
+	state.loaded = true
+	state.persist_dirty = true
+	for _, object_id in ipairs(impl.active_ids()) do
+		impl.forget_or_release(object_id, state.active[object_id], false)
+	end
+	return impl.persist_records()
+end
+function impl.update(now)
+	if not state.loaded and not impl.restore_and_cleanup() then return end
+	if state.persist_dirty then impl.persist_records() end
+	for _, object_id in ipairs(impl.active_ids()) do
+		local record = state.active[object_id]
+		if now >= record.expires_at then
+			impl.forget_or_release(object_id, record)
+		else
+			local simulator = alife and alife() or nil
+			if simulator ~= nil then
+				local lookup_ok, object = pcall(function()
+					return simulator:object(object_id, true)
+				end)
+				if lookup_ok and object == nil then
+					impl.forget_record(object_id)
+				elseif lookup_ok and impl.matches_record(object, record) == false then
+					impl.forget_record(object_id)
+				end
+			end
+		end
+	end
+end
+function impl.on_game_load()
+	state.active = {}
+	state.loaded = false
+	state.persist_dirty = false
+	state.restore_after_ms = (time_global and time_global() or 0) + C.LOAD_GRACE_MS
+end
+function impl.can_execute(context, params)
+	local options, error_code = impl.parse(params)
+	if options == nil then return false, "rejected", error_code end
+	local simulator = alife and alife() or nil
+	if simulator == nil then return false, "deferred", "alife_unavailable" end
+	if not impl.restore_and_cleanup() then
+		return false, "deferred", "anomaly_tracking_unavailable"
+	end
+	local ini = system_ini()
+	if ini == nil or not ini:section_exist(options.section) then
+		return false, "rejected", "anomaly_section_missing"
+	end
+	impl.update(context.now or 0)
+	if impl.active_count() >= C.MAX_ACTIVE then
+		return false, "deferred", "active_anomaly_limit_reached"
+	end
+	context.action_options = options
+	return true
+end
+function impl.execute(context, params)
+	local options = context.action_options
+	if options == nil then options = impl.parse(params) end
+	if options == nil then return "rejected", "anomaly_parameters_invalid" end
+	local point, point_error = impl.find_point(context.actor, options.distance_meters)
+	if point == nil then return "deferred", point_error end
+	local ok, object = pcall(function()
+		return alife():create(options.section, point.position, point.vertex_id,
+			context.actor:game_vertex_id())
+	end)
+	if not ok then return "uncertain", "anomaly_create_failed_state_unknown" end
+	if object == nil then return "rejected", "anomaly_spawn_failed" end
+	local id_ok, object_id = pcall(function() return object.id end)
+	if not id_ok or type(object_id) ~= "number" or object_id ~= math.floor(object_id) or
+		object_id <= 0 or object_id > C.MAX_OBJECT_ID then
+		if impl.release_created(object) then
+			return "rejected", "anomaly_id_invalid_rolled_back"
+		end
+		return "uncertain", "anomaly_id_invalid_cleanup_failed"
+	end
+	local position_ok, object_x, object_y, object_z = pcall(function()
+		return object.position.x, object.position.y, object.position.z
+	end)
+	if not position_ok or not impl.valid_coordinate(object_x) or
+		not impl.valid_coordinate(object_y) or not impl.valid_coordinate(object_z) then
+		if impl.release_created(object) then
+			return "rejected", "anomaly_position_unavailable_rolled_back"
+		end
+		state.active[object_id] = { section = options.section,
+			x = point.position.x, y = point.position.y, z = point.position.z,
+			expires_at = context.now or 0 }
+		impl.persist_records()
+		return "uncertain", "anomaly_position_and_cleanup_unavailable"
+	end
+	state.active[object_id] = { section = options.section,
+		x = object_x, y = object_y, z = object_z,
+		expires_at = (context.now or 0) + options.lifetime_seconds * 1000 }
+	if not impl.persist_records() then
+		if impl.release_created(object) then
+			state.active[object_id] = nil
+			state.persist_dirty = true
+			impl.persist_records()
+			return "rejected", "anomaly_tracking_failed_rolled_back"
+		end
+		state.active[object_id].expires_at = context.now or 0
+		return "uncertain", "anomaly_tracking_and_cleanup_failed"
+	end
+	return "executed", "spawned_anomaly_" .. options.section .. "_for_" ..
+		tostring(options.lifetime_seconds) .. "s_at_" ..
+		string.format("%.2f", point.actual_distance_meters) .. "m"
+end
+pf_donation_registry.register(ACTION_ID, {
+	source = "scripts\\pf_donation_action_spawn_anomaly.script",
+	can_execute = impl.can_execute,
+	execute = impl.execute,
+	update = impl.update,
+	on_game_load = impl.on_game_load
+})

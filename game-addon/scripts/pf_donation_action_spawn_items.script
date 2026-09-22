@@ -1,0 +1,223 @@
+--[[CDB_PRESET_V1
+{"schemaVersion":1,"handlerId":"spawn_items","displayName":"Добавить предметы в инвентарь","description":"Добавляет выбранные предметы из безопасных категорий игрового спавнера прямо в инвентарь персонажа.","category":"inventory","cooldownSeconds":1,"parameterDefinitions":[{"key":"item","displayName":"Предмет","kind":"ItemChoice","options":["bandage","medkit","antirad","bread","conserva","vodka","ammo_9x18_fmj","ammo_5.45x39_fmj","ammo_12x70_buck"],"optionGroups":{"medicine":["bandage","medkit","antirad"],"food":["bread","conserva","vodka"],"ammo_explosives":["ammo_9x18_fmj","ammo_5.45x39_fmj","ammo_12x70_buck"]},"defaultValue":"medkit","catalogKind":"item"},{"key":"count","displayName":"Количество","kind":"Integer","minimum":1,"maximum":50,"defaultValue":"1"}],"parameters":{"item":"medkit","count":"1"},"itemSpawns":[{"itemId":"medkit","count":1}]}
+CDB_PRESET_END]]
+local ACTION_ID = "spawn_items"
+local C = {
+	REGISTRY_SECTION = "inventory_sort_registry",
+	ALLOWLIST_SECTION = "pf_donation_item_allowlist",
+	RANDOM_WEAPON_SECTION = "__random_weapon__",
+	RANDOM_WEAPON_GROUP = "weapons",
+	MAX_BUNDLE_LENGTH = 4000,
+	ALLOWED_GROUPS = {
+		weapons = true, ammo_explosives = true, armor = true,
+		weapon_addons = true, electronics = true, artefacts = true,
+		medicine = true, food = true, repair_tools = true,
+		materials = true, mutant_parts = true, containers = true,
+		misc = true
+	},
+	ALLOWED_LEGACY_CODES = {
+		[10] = true, [20] = true, [30] = true, [40] = true,
+		[50] = true, [60] = true, [70] = true, [80] = true,
+		[90] = true, [100] = true, [110] = true,
+		[130] = true, [140] = true
+	},
+	LEGACY_GROUP_NAMES = {
+		[10] = "weapons", [20] = "ammo_explosives", [30] = "armor",
+		[40] = "weapon_addons", [50] = "electronics", [60] = "artefacts",
+		[70] = "medicine", [80] = "food", [90] = "repair_tools",
+		[100] = "materials", [110] = "mutant_parts", [130] = "containers",
+		[140] = "misc"
+	}
+}
+local impl = {}
+
+function impl.normalize(value)
+	return string.gsub(string.lower(tostring(value or "")), "^%s*(.-)%s*$", "%1")
+end
+
+function impl.registered_group(ini, section)
+	if not ini:section_exist(C.REGISTRY_SECTION) or
+		not ini:line_exist(C.REGISTRY_SECTION, section) then
+		return nil, false
+	end
+	local raw_group = impl.normalize(ini:r_string(C.REGISTRY_SECTION, section))
+	if C.ALLOWED_GROUPS[raw_group] == true then return raw_group, true end
+	local legacy_code = tonumber(raw_group)
+	local legacy_group = legacy_code ~= nil and C.LEGACY_GROUP_NAMES[legacy_code] or nil
+	return legacy_group, legacy_group ~= nil and C.ALLOWED_LEGACY_CODES[legacy_code] == true
+end
+
+function impl.parse(params)
+	for key in pairs(params) do
+		if key ~= "items" and key ~= "item" and key ~= "count" then
+			return nil, "parameter_not_supported"
+		end
+	end
+	local entries = {}
+	local bundle = params.items ~= nil and tostring(params.items) or nil
+	if bundle ~= nil then
+		if bundle == "" or #bundle > C.MAX_BUNDLE_LENGTH or
+			string.sub(bundle, 1, 1) == ";" or string.sub(bundle, -1) == ";" or
+			string.find(bundle, ";;", 1, true) then
+			return nil, "item_bundle_invalid"
+		end
+		for token in string.gmatch(bundle, "([^;]+)") do
+			local section, count_text = string.match(token, "^([%w_%.@%-]+)%*(%d+)$")
+			local count = count_text ~= nil and tonumber(count_text) or nil
+			if section == nil or section == "" or #section > 128 then
+				return nil, "item_section_invalid"
+			end
+			if count == nil or count < 1 or count > 50 then
+				return nil, "item_count_invalid"
+			end
+			entries[#entries + 1] = { section = string.lower(section), count = count }
+		end
+		if #entries == 0 then return nil, "item_bundle_empty" end
+	else
+		local section = tostring(params.item or "medkit"):lower()
+		if section == "" or #section > 128 or not string.match(section, "^[%w_%.@%-]+$") then
+			return nil, "item_section_invalid"
+		end
+		local count_text = tostring(params.count or "1")
+		if not count_text:match("^%d+$") then return nil, "item_count_invalid" end
+		local count = tonumber(count_text)
+		if count == nil or count < 1 or count > 50 then return nil, "item_count_invalid" end
+		entries[1] = { section = section, count = count }
+	end
+	return { entries = entries }
+end
+
+function impl.validate_section(ini, section, required_group)
+	if ini == nil or not ini:section_exist(section) then
+		return false, "item_section_missing"
+	end
+	local registered_group, group_allowed = impl.registered_group(ini, section)
+	if registered_group == nil then
+		return false, "item_not_registered"
+	end
+	if not group_allowed or string.sub(section, 1, 4) == "veh_" then
+		return false, "item_group_not_allowed"
+	end
+	if required_group ~= nil and registered_group ~= required_group then
+		return false, "item_group_not_allowed"
+	end
+	if not ini:section_exist(C.ALLOWLIST_SECTION) or
+		not ini:line_exist(C.ALLOWLIST_SECTION, section) then
+		return false, "item_not_in_donation_allowlist"
+	end
+	local allowed_group = impl.normalize(ini:r_string(C.ALLOWLIST_SECTION, section))
+	if allowed_group ~= registered_group then
+		return false, "item_allowlist_group_mismatch"
+	end
+	if ini:line_exist(section, "quest_item") and
+		ini:r_bool(section, "quest_item") then
+		return false, "item_is_quest_item"
+	end
+	if ini:line_exist(section, "can_trade") and
+		not ini:r_bool(section, "can_trade") then
+		return false, "item_is_protected"
+	end
+	if ini:line_exist(section, "can_take") and
+		not ini:r_bool(section, "can_take") then
+		return false, "item_cannot_be_taken"
+	end
+	if ini:line_exist(section, "story_id") and
+		string.gsub(tostring(ini:r_string(section, "story_id") or ""),
+			"^%s*(.-)%s*$", "%1") ~= "" then
+		return false, "item_has_story_id"
+	end
+	if ini:line_exist(section, "class") and
+		string.upper(tostring(ini:r_string(section, "class") or "")) == "S_EXPLO" then
+		return false, "item_is_world_explosive"
+	end
+	return true
+end
+
+function impl.random_weapon_candidates(ini)
+	local result = {}
+	local seen = {}
+	if ini == nil or not ini:section_exist(C.ALLOWLIST_SECTION) then return result end
+	for index = 0, (ini:line_count(C.ALLOWLIST_SECTION) or 0) - 1 do
+		local ok, raw_section = ini:r_line(C.ALLOWLIST_SECTION, index, "", "")
+		local section = impl.normalize(raw_section)
+		if ok and section ~= "" and #section <= 128 and
+			not string.find(section, "[%c%s]") and not seen[section] then
+			local allowed = impl.validate_section(ini, section, C.RANDOM_WEAPON_GROUP)
+			if allowed then
+				seen[section] = true
+				result[#result + 1] = section
+			end
+		end
+	end
+	return result
+end
+
+function impl.can_execute(context, params)
+	local options, error_code = impl.parse(params)
+	if options == nil then return false, "rejected", error_code end
+	if alife == nil or alife() == nil then
+		return false, "deferred", "alife_unavailable"
+	end
+	local ini = system_ini()
+	local random_candidates = nil
+	for _, entry in ipairs(options.entries) do
+		if entry.section == C.RANDOM_WEAPON_SECTION then
+			random_candidates = random_candidates or impl.random_weapon_candidates(ini)
+			if #random_candidates == 0 then
+				return false, "rejected", "random_weapon_unavailable"
+			end
+			entry.section = random_candidates[math.random(1, #random_candidates)]
+		end
+		local allowed, section_error = impl.validate_section(ini, entry.section)
+		if not allowed then
+			return false, "rejected", section_error
+		end
+	end
+	context.action_options = options
+	return true
+end
+
+function impl.rollback(created)
+	local complete = true
+	for index = #created, 1, -1 do
+		local ok = pcall(function() alife():release(created[index], true) end)
+		if not ok then complete = false end
+	end
+	return complete
+end
+
+function impl.execute(context, params)
+	local options = context.action_options
+	if options == nil then options = impl.parse(params) end
+	if options == nil then return "rejected", "item_parameters_invalid" end
+	local created = {}
+	local total = 0
+	for _, entry in ipairs(options.entries) do
+		for _ = 1, entry.count do
+			local ok, object = pcall(function()
+				return alife():create(entry.section, context.actor:position(),
+					context.actor:level_vertex_id(), context.actor:game_vertex_id(),
+					context.actor:id())
+			end)
+			if not ok then
+				impl.rollback(created)
+				return "uncertain", "item_spawn_failed_state_unknown"
+			end
+			if object == nil then
+				if not impl.rollback(created) then
+					return "uncertain", "item_spawn_failed_rollback_incomplete"
+				end
+				return "rejected", "item_spawn_failed_rolled_back"
+			end
+			created[#created + 1] = object
+			total = total + 1
+		end
+	end
+	return "executed", "spawned_item_bundle_" .. tostring(#options.entries) .. "_" .. tostring(total)
+end
+
+pf_donation_registry.register(ACTION_ID, {
+	source = "scripts\\pf_donation_action_spawn_items.script",
+	can_execute = impl.can_execute,
+	execute = impl.execute
+})

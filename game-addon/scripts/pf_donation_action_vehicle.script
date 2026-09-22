@@ -1,0 +1,380 @@
+--[[CDB_PRESET_V1
+{"schemaVersion":1,"handlerId":"spawn_vehicle","displayName":"Заспавнить транспорт","description":"Создаёт одну машину на ближайшем свободном месте и при необходимости ищет подходящую площадку до 100 м. Бензин задаётся в литрах от 1 до 10.","category":"world","cooldownSeconds":1,"parameterDefinitions":[{"key":"vehicle","displayName":"Транспорт","kind":"Choice","options":["veh_dcp_niva","veh_dcp_niva_green","veh_dcp_zaz968_2","veh_dcp_lada_2101","veh_dcp_lada_dead","veh_dcp_uaz_van","veh_dcp_uaz_van_broken","veh_dcp_uaz_broken","veh_dcp_gaz24","veh_dcp_moskvich_412","veh_dcp_raf","veh_dcp_moskvich_2715","veh_dcp_uaz","veh_dcp_zil","veh_dcp_zil131","veh_dcp_mercedes_w123","veh_dcp_lada_2107","veh_dcp_lada_2108","veh_dcp_niva_2329","veh_dcp_brdm","veh_dcp_btr","veh_dcp_kamaz_army_tent","veh_dcp_kamaz_army","veh_btr","veh_kamaz","veh_niva_g","veh_niva_w","veh_tr13","veh_uaz","veh_zaz"],"defaultValue":"veh_dcp_niva","catalogKind":"vehicle"},{"key":"fuel_level","displayName":"Бензин, литры (1–10)","kind":"Integer","minimum":1,"maximum":10,"defaultValue":"5"}],"parameters":{"vehicle":"veh_dcp_niva","fuel_level":"5"}}
+CDB_PRESET_END]]
+-- Chronicles IX-Ray only. No engine patch, packet editing or Anomaly API.
+-- Spatial work runs once per command, never as a permanent ALife scan.
+local C = {
+    INVALID = 4294967295, ONLINE_TIMEOUT = 5000, MAX_NEARBY = 256,
+    -- Audited F1 models: half width, half length, ground lift, headroom, legacy.
+    -- Bounds include 20cm padding; see scripts/check-vehicle-catalog.ps1.
+    SECTIONS = {
+        veh_dcp_niva = { 1.25, 2.20, 0.15, 2.20, false },
+        veh_dcp_niva_green = { 1.25, 2.20, 0.15, 2.20, false },
+        veh_dcp_zaz968_2 = { 1.05, 2.25, 0.20, 1.85, false },
+        veh_dcp_lada_2101 = { 1.15, 2.45, 0.15, 1.90, false },
+        veh_dcp_lada_dead = { 1.15, 2.50, 0.20, 2.10, false },
+        veh_dcp_uaz_van = { 1.45, 2.55, 0.15, 2.50, false },
+        veh_dcp_uaz_van_broken = { 1.35, 2.60, 0.15, 2.60, false },
+        veh_dcp_uaz_broken = { 1.25, 2.75, 0.15, 2.50, false },
+        veh_dcp_gaz24 = { 1.20, 2.80, 0.10, 1.95, false },
+        veh_dcp_moskvich_412 = { 1.20, 2.55, 0.20, 2.00, false },
+        veh_dcp_raf = { 1.35, 2.95, 0.20, 2.50, false },
+        veh_dcp_moskvich_2715 = { 1.20, 2.50, 0.20, 2.30, false },
+        veh_dcp_uaz = { 1.25, 2.55, 0.15, 2.50, false },
+        veh_dcp_zil = { 1.75, 4.10, 0.20, 3.00, false },
+        veh_dcp_zil131 = { 1.65, 4.05, 0.40, 2.95, false },
+        veh_dcp_mercedes_w123 = { 1.25, 2.80, 0.15, 1.95, false },
+        veh_dcp_lada_2107 = { 1.20, 2.40, 0.15, 2.50, false },
+        veh_dcp_lada_2108 = { 1.20, 2.70, 0.15, 1.90, false },
+        veh_dcp_niva_2329 = { 1.35, 2.75, 0.15, 2.45, false },
+        veh_dcp_brdm = { 1.45, 3.40, 0.05, 3.75, false },
+        veh_dcp_btr = { 1.75, 4.10, 0.15, 2.90, false },
+        veh_dcp_kamaz_army_tent = { 1.75, 4.75, 0.20, 3.80, false },
+        veh_dcp_kamaz_army = { 1.75, 4.75, 0.20, 3.55, false },
+        veh_btr = { 1.80, 4.35, 0.05, 3.45, true },
+        veh_kamaz = { 1.95, 4.70, 0.10, 4.25, true },
+        veh_niva_g = { 1.85, 7.80, 0.25, 2.20, true },
+        veh_niva_w = { 1.85, 7.80, 0.25, 2.20, true },
+        veh_tr13 = { 1.65, 8.10, 0.05, 2.95, true },
+        veh_uaz = { 1.25, 2.45, 0.10, 2.30, true },
+        veh_zaz = { 1.90, 7.60, 0.20, 2.00, true }
+    },
+    LOCAL_RADII = { 3.5, 4, 4.5, 5, 6, 7, 8, 9, 10 },
+    EXTENDED_RADII = { 12, 15, 20, 25, 30, 40, 50, 65, 80, 100 },
+    MAX_SEARCH_RADIUS = 100,
+    ANGLES = { 0, 30, -30, 60, -60, 90, -90, 120, -120, 150, -150, 180 }
+}
+local impl = {}
+
+function impl.integer(value, default, low, high)
+    local text = tostring(value or default)
+    if not text:match("^%d+$") then return nil end
+    local number = tonumber(text)
+    if number == nil or number < low or number > high then return nil end
+    return number
+end
+
+function impl.no_story(value)
+    local id = tonumber(value)
+    return id ~= nil and (id == -1 or id == C.INVALID or id == 65535)
+end
+
+function impl.car_section(ini, section)
+    if not ini:section_exist(section) or not ini:line_exist(section, "class") or
+        ini:r_string(section, "class") ~= "C_NIVA" then return false end
+    if ini:line_exist(section, "quest_item") and ini:r_bool(section, "quest_item") then return false end
+    if ini:line_exist(section, "story_id") and
+        not impl.no_story(ini:r_string(section, "story_id")) then return false end
+    return true
+end
+
+function impl.nearby(position, radius)
+    if nearest == nil or type(nearest.set) ~= "function" or type(nearest.size) ~= "function" or
+        type(nearest.get) ~= "function" then return nil, "vehicle_spatial_api_unavailable" end
+    nearest.set(radius, position)
+    local count = tonumber(nearest.size())
+    if count == nil or count < 0 or count % 1 ~= 0 or count > C.MAX_NEARBY then
+        return nil, "vehicle_area_too_crowded"
+    end
+    local objects = {}
+    -- IX-Ray nearest.get(size) is out of bounds. The last valid index is size-1.
+    for index = 0, count - 1 do
+        local object = nearest.get(index)
+        if object ~= nil then objects[#objects + 1] = object end
+    end
+    return objects
+end
+
+function impl.vertex_valid(id)
+    return id ~= nil and id ~= C.INVALID and level.valid_vertex_id(id)
+end
+
+function impl.vertex_accessible(id)
+    if not impl.vertex_valid(id) then return false end
+    local ok, accessible = pcall(function() return level.is_accessible_vertex_id(id) end)
+    return ok and accessible == true
+end
+
+function impl.candidate_vertices(start, origin, direction, radius)
+    local result, present = {}, {}
+    local desired = vector():set(
+        origin.x + direction.x * radius,
+        origin.y,
+        origin.z + direction.z * radius)
+    local direct_ok, direct = pcall(function() return level.vertex_id(desired) end)
+    if direct_ok and impl.vertex_valid(direct) then
+        result[#result + 1], present[direct] = direct, true
+    end
+    local direction_ok, directional = pcall(function()
+        return level.vertex_in_direction(start, direction, radius)
+    end)
+    if direction_ok and impl.vertex_valid(directional) and not present[directional] then
+        result[#result + 1] = directional
+    end
+    return result
+end
+
+function impl.create_ray()
+    -- luabind classes are callable objects, not ordinary Lua functions. Probe
+    -- construction inside a closure: pcall(ray_pick) also rejects such classes.
+    local ok, ray = pcall(function()
+        if rq_target == nil or rq_target.rqtStatic == nil then return nil end
+        local probe = ray_pick()
+        if probe == nil then return nil end
+        for _, method in ipairs({ "set_flags", "set_position", "set_direction", "set_range",
+            "query", "get_distance" }) do
+            if type(probe[method]) ~= "function" then return nil end
+        end
+        -- This engine reads static triangle material after a ray hit. Dynamic
+        -- element indices are not triangles, so never use dynamic flags here.
+        probe:set_flags(rq_target.rqtStatic)
+        return probe
+    end)
+    if ok then return ray end
+    return nil
+end
+
+function impl.ray(ray, origin, direction, distance)
+    ray:set_position(origin)
+    ray:set_direction(direction)
+    ray:set_range(distance)
+    return ray:query(), ray
+end
+
+function impl.clear_site(actor, point, forward, right, probe, shape)
+    local half_width, half_length, headroom = shape[1], shape[2], shape[4]
+    local nearby = impl.nearby(point, math.sqrt(half_width^2 + half_length^2) + 0.25)
+    if nearby == nil then return false end
+    for _, object in ipairs(nearby) do
+        if object:id() ~= actor:id() and object:parent() == nil then return false end
+    end
+    local floor_min, floor_max = math.huge, -math.huge
+    local lengths, steps = {}, math.ceil(half_length / 2)
+    for index = -steps, steps do lengths[#lengths + 1] = index * half_length / steps end
+    for _, length in ipairs(lengths) do
+        for _, width in ipairs({ -half_width, 0, half_width }) do
+            local x = point.x + forward.x * length + right.x * width
+            local z = point.z + forward.z * length + right.z * width
+            local hit, ray = impl.ray(probe, vector():set(x, point.y + 0.75, z), vector():set(0, -1, 0), 1.5)
+            if not hit then return false end
+            local ground_y = point.y + 0.75 - ray:get_distance()
+            if math.abs(ground_y - point.y) > 0.35 then return false end
+            floor_min, floor_max = math.min(floor_min, ground_y), math.max(floor_max, ground_y)
+            -- Headroom, including the middle of the body (not only its edges).
+            if impl.ray(probe, vector():set(x, ground_y + 0.12, z), vector():set(0, 1, 0), headroom) then return false end
+        end
+    end
+    if floor_max - floor_min > 0.35 then return false end
+    -- Rows and columns through the footprint reject walls, rails and pillars.
+    for _, height in ipairs({ 0.45, headroom / 2, headroom - 0.15 }) do
+        for _, width in ipairs({ -half_width, 0, half_width }) do
+            local start = vector():set(point.x - forward.x * half_length + right.x * width,
+                floor_max + height, point.z - forward.z * half_length + right.z * width)
+            if impl.ray(probe, start, forward, half_length * 2) then return false end
+        end
+        for _, length in ipairs(lengths) do
+            local start = vector():set(point.x + forward.x * length - right.x * half_width,
+                floor_max + height, point.z + forward.z * length - right.z * half_width)
+            if impl.ray(probe, start, right, half_width * 2) then return false end
+        end
+    end
+    return true, floor_max
+end
+
+function impl.search_sites(actor, probe, shape, origin, start, forward, right,
+    minimum_distance, seen, radii, require_line_of_sight)
+    local maximum_distance = radii[#radii]
+    -- Nearest rings always win; inside each ring prefer the front hemisphere.
+    for _, radius in ipairs(radii) do
+        for _, angle_group in ipairs({ {1, 7}, {8, #C.ANGLES} }) do
+            for index = angle_group[1], angle_group[2] do
+                local angle = math.rad(C.ANGLES[index])
+                local dir = vector():set(forward.x * math.cos(angle) + right.x * math.sin(angle), 0,
+                    forward.z * math.cos(angle) + right.z * math.sin(angle))
+                for _, vertex in ipairs(impl.candidate_vertices(start, origin, dir, radius)) do
+                    if not seen[vertex] and impl.vertex_accessible(vertex) then
+                        seen[vertex] = true
+                        local point_ok, point = pcall(function() return level.vertex_position(vertex) end)
+                        if point_ok and point ~= nil then
+                            local dx, dz = point.x - origin.x, point.z - origin.z
+                            local distance2 = dx * dx + dz * dz
+                            local local_height_ok = not require_line_of_sight or math.abs(point.y - origin.y) <= 0.7
+                            if distance2 >= minimum_distance^2 and
+                                distance2 <= maximum_distance^2 and local_height_ok then
+                                local blocked = false
+                                if require_line_of_sight then
+                                    -- Nearby placement must not snap through a wall. The extended
+                                    -- outdoor search deliberately crosses a building boundary.
+                                    local distance = math.sqrt(distance2)
+                                    blocked = impl.ray(probe,
+                                        vector():set(origin.x, origin.y + 1, origin.z),
+                                        vector():set(dx / distance, (point.y - origin.y) / distance,
+                                            dz / distance):normalize(),
+                                        math.sqrt(distance2 + (point.y - origin.y)^2))
+                                end
+                                if not blocked then
+                                    local clear, ground = impl.clear_site(
+                                        actor, point, forward, right, probe, shape)
+                                    -- The lift includes the selected model's negative minimum Y.
+                                    if clear then
+                                        return {
+                                            position = vector():set(
+                                                point.x, ground + shape[3], point.z),
+                                            vertex = vertex,
+                                            yaw = math.atan2(-forward.x, forward.z)
+                                        }
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return nil
+end
+
+function impl.find_site(actor, probe, shape)
+    local origin, direction = actor:position(), actor:direction()
+    local magnitude = math.sqrt(direction.x * direction.x + direction.z * direction.z)
+    if magnitude < 0.001 then return nil, "vehicle_actor_direction_invalid" end
+    local forward = vector():set(direction.x / magnitude, 0, direction.z / magnitude)
+    local right = vector():set(forward.z, 0, -forward.x)
+    local start = actor:level_vertex_id()
+    if not impl.vertex_valid(start) then return nil, "vehicle_actor_vertex_invalid" end
+    local minimum_distance = math.max(3.3, math.sqrt(shape[1]^2 + shape[2]^2) + 0.75)
+    local seen = {}
+    local local_site = impl.search_sites(actor, probe, shape, origin, start, forward, right,
+        minimum_distance, seen, C.LOCAL_RADII, true)
+    if local_site ~= nil then return local_site end
+    local extended_site = impl.search_sites(actor, probe, shape, origin, start, forward, right,
+        math.max(minimum_distance, C.LOCAL_RADII[#C.LOCAL_RADII]), seen, C.EXTENDED_RADII, false)
+    if extended_site ~= nil then return extended_site end
+    return nil, "vehicle_no_clear_site_within_100m"
+end
+
+function impl.spawn_check(context, params)
+    for key in pairs(params) do
+        if key ~= "vehicle" and key ~= "fuel_level" then return false, "rejected", "parameter_not_supported" end
+    end
+    local section = tostring(params.vehicle or "veh_dcp_niva")
+    local fuel = impl.integer(params.fuel_level, 5, 1, 10)
+    if fuel == nil then return false, "rejected", "vehicle_fuel_level_invalid" end
+    if not C.SECTIONS[section] or not impl.car_section(system_ini(), section) then
+        return false, "rejected", "vehicle_section_not_supported"
+    end
+    if nearest == nil or type(nearest.set) ~= "function" or type(nearest.get) ~= "function" or
+        type(nearest.size) ~= "function" or type(level.object_by_id) ~= "function" then
+        return false, "rejected", "vehicle_spatial_api_unavailable"
+    end
+    if alife == nil or alife() == nil then return false, "deferred", "alife_unavailable" end
+    context.vehicle_ray = impl.create_ray()
+    if context.vehicle_ray == nil then return false, "rejected", "vehicle_ray_api_unavailable" end
+    context.vehicle_section, context.vehicle_fuel = section, fuel
+    return true
+end
+
+function impl.spawn(context)
+    -- One probe per command; reset origin/direction/range for every query.
+    local site, error_code = impl.find_site(context.actor, context.vehicle_ray, C.SECTIONS[context.vehicle_section])
+    context.vehicle_ray = nil
+    if site == nil then return "deferred", error_code end
+    local object = alife():create(context.vehicle_section, site.position, site.vertex, context.actor:game_vertex_id())
+    if object == nil then return "rejected", "vehicle_create_returned_nil" end
+    context.vehicle_id, context.vehicle_name = object.id, object:name()
+    context.vehicle_deadline = context.now + C.ONLINE_TIMEOUT
+    object.angle = vector():set(0, site.yaw, 0)
+    -- Fuel exists on CCar only, not on the Lua server entity. Withhold ACK until
+    -- it comes online and the requested litres have actually been written.
+    return "pending", "vehicle_waiting_online"
+end
+
+function impl.same_server(context)
+    local object = alife() and alife():object(context.vehicle_id)
+    if object == nil or object:section_name() ~= context.vehicle_section or
+        object:name() ~= context.vehicle_name then return nil end
+    return object
+end
+
+function impl.rollback(context, reason)
+    local object = impl.same_server(context)
+    if object == nil then return "uncertain", reason .. "_identity_lost" end
+    local ok = pcall(function() alife():release(object, true) end)
+    if not ok or impl.same_server(context) ~= nil then return "uncertain", reason .. "_rollback_unconfirmed" end
+    return "rejected", reason .. "_rolled_back"
+end
+
+function impl.poll_spawn(context, now)
+    if impl.same_server(context) == nil then return "uncertain", "vehicle_identity_lost" end
+    local object = level.object_by_id(context.vehicle_id)
+    if object ~= nil then
+        if object:section() ~= context.vehicle_section or object:name() ~= context.vehicle_name then
+            return "uncertain", "vehicle_online_identity_changed"
+        end
+        local car = object:get_car()
+        -- Legacy CCar has fuel/fuel_tank too, but no opt-in DCP fuel profile.
+        -- Do not require or enable that profile for the seven stock vehicles.
+        local legacy = C.SECTIONS[context.vehicle_section][5]
+        if car == nil or (not legacy and not car:fuel_system_enabled()) or car:GetfHealth() <= 0 then
+            return impl.rollback(context, "vehicle_fuel_api_unavailable")
+        end
+        local capacity = tonumber(car.fuel_tank)
+        if capacity == nil or capacity ~= capacity or capacity <= 0 or capacity > 10000 then
+            return impl.rollback(context, "vehicle_tank_invalid")
+        end
+        local wanted = context.vehicle_fuel -- 1..10 actual litres, independent of tank size.
+        if wanted > capacity then return impl.rollback(context, "vehicle_fuel_exceeds_tank") end
+        car.fuel = wanted
+        local actual = tonumber(car.fuel)
+        if actual == nil or actual ~= actual or math.abs(actual - wanted) > 0.01 then
+            return impl.rollback(context, "vehicle_fuel_write_failed")
+        end
+        return "executed", "vehicle_spawned_" .. context.vehicle_section .. "_fuel_" .. tostring(wanted) .. "L"
+    end
+    if now >= context.vehicle_deadline then return impl.rollback(context, "vehicle_online_timeout") end
+    return "pending", "vehicle_waiting_online"
+end
+
+function impl.explosion_check(context, params)
+    for key in pairs(params) do if key ~= "radius_meters" then return false, "rejected", "parameter_not_supported" end end
+    local radius = impl.integer(params.radius_meters, 5, 1, 2000)
+    if radius == nil then return false, "rejected", "vehicle_radius_invalid" end
+    context.vehicle_radius = radius
+    return true
+end
+
+function impl.explode(context)
+    local origin = context.actor:position()
+    local objects, reason = impl.nearby(origin, context.vehicle_radius)
+    if objects == nil then return "rejected", reason end
+    local closest, best_distance = nil, context.vehicle_radius * context.vehicle_radius
+    local ini = system_ini()
+    for _, object in ipairs(objects) do
+        if object:id() ~= context.actor:id() and object:parent() == nil and
+            impl.car_section(ini, object:section()) and impl.no_story(object:story_id()) then
+            local car = object:get_car()
+            if car ~= nil and car:GetfHealth() > 0 then
+                local p = object:position()
+                local distance = (p.x-origin.x)^2 + (p.y-origin.y)^2 + (p.z-origin.z)^2
+                if distance <= best_distance and (closest == nil or distance < best_distance or object:id() < closest:id()) then
+                    closest, best_distance = object, distance
+                end
+            end
+        end
+    end
+    if closest == nil then return "rejected", "vehicle_no_unprotected_car_in_radius" end
+    -- No deletion of arbitrary objects and no search outside the selected radius.
+    local id = closest:id()
+    closest:get_car():CarExplode()
+    return "executed", "vehicle_explosion_triggered_" .. tostring(id)
+end
+
+pf_donation_registry.register("spawn_vehicle", {
+    source = "scripts\\pf_donation_action_vehicle.script",
+    can_execute = impl.spawn_check, execute = impl.spawn, poll = impl.poll_spawn
+})
+pf_donation_registry.register("explode_nearest_vehicle", {
+    source = "scripts\\pf_donation_action_vehicle.script",
+    can_execute = impl.explosion_check, execute = impl.explode
+})

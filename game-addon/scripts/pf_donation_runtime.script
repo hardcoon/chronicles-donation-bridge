@@ -1,0 +1,292 @@
+local C = { VERSION = "0.6.2", PROTOCOL = "2", UPDATE_MS = 100,
+	RETRY_MS = 1000, LOAD_GRACE_MS = 1500, MAX_EVENTS = 8, RECENT_LIMIT = 256 }
+local STATE_KEY = "__pf_donation_runtime_v1"
+local state = rawget(_G, STATE_KEY)
+local impl = {}
+
+if type(state) ~= "table" then
+	state = { welcomed = false, app_version = "", next_update_ms = 0,
+		next_attach_ms = 0, loading_until_ms = 0, last_status = "",
+		last_reason = "", recent = {}, recent_order = {} }
+	rawset(_G, STATE_KEY, state)
+end
+
+function impl.now()
+	return time_global and time_global() or 0
+end
+
+function impl.reset_session(disconnect_pipe)
+	if disconnect_pipe then pf_donation_transport.disconnect() end
+	state.welcomed = false
+	state.app_version = ""
+	state.last_status = ""
+	state.last_reason = ""
+end
+
+function impl.send(fields)
+	local sent, error_code = pf_donation_transport.send(fields)
+	if not sent then impl.reset_session(false) end
+	return sent, error_code
+end
+
+function impl.try_attach(now)
+	if pf_donation_transport.is_connected() then return true end
+	if now < (state.next_attach_ms or 0) then return false end
+	state.next_attach_ms = now + C.RETRY_MS
+	local connected = pf_donation_transport.connect()
+	if not connected then return false end
+	-- Identity of this Lua runtime, not of a save. Do not use math.random:
+	-- connecting the bridge must not alter the game's random sequence.
+	if state.session_id == nil then
+		state.session_id = tostring(pf_donation_transport.process_id()) .. "." ..
+			tostring(now) .. "." .. tostring(state)
+	end
+	local sent = impl.send({ "HELLO", C.PROTOCOL, C.VERSION,
+		tostring(pf_donation_transport.process_id()), state.session_id })
+	if not sent then pf_donation_transport.disconnect() return false end
+	return true
+end
+
+function impl.window_shown(window)
+	if window == nil or type(window.IsShown) ~= "function" then return false end
+	local ok, shown = pcall(function() return window:IsShown() end)
+	return ok and shown == true
+end
+
+function impl.menu_visible()
+	local actor_menu = rawget(_G, "ActorMenu")
+	if actor_menu and type(actor_menu.get_actor_menu) == "function" then
+		local ok, menu = pcall(actor_menu.get_actor_menu)
+		if ok and impl.window_shown(menu) then return true end
+	end
+	local main_menu_module = rawget(_G, "main_menu")
+	if main_menu_module and type(main_menu_module.get_main_menu) == "function" then
+		local ok, menu = pcall(main_menu_module.get_main_menu)
+		if ok and impl.window_shown(menu) then return true end
+	end
+	return false
+end
+
+function impl.cutscene_active()
+	if db == nil or type(db.storage) ~= "table" then return false end
+	for _, storage in pairs(db.storage) do
+		if type(storage) == "table" and storage.active_scheme == "sr_cutscene" then
+			return true
+		end
+	end
+	return false
+end
+
+function impl.readiness(now)
+	if now < (state.loading_until_ms or 0) then return false, "game_loading" end
+	if not level or type(level.present) ~= "function" or not level.present() then
+		return false, "level_unavailable"
+	end
+	if not db or db.actor == nil then return false, "actor_unavailable" end
+	local actor = db.actor
+	local alive_ok, alive = pcall(function() return actor:alive() end)
+	if not alive_ok or not alive then return false, "actor_dead" end
+	local car_ok, in_car = pcall(function() return actor:IsInCar() end)
+	if car_ok and in_car then return false, "actor_in_vehicle" end
+	local talk_ok, talking = pcall(function() return actor:is_talking() end)
+	if talk_ok and talking then return false, "actor_in_dialog" end
+	local sleep_ok, sleeping = pcall(function()
+		return actor:has_info("actor_is_sleeping") or actor:has_info("sleep_active")
+	end)
+	if sleep_ok and sleeping then return false, "actor_sleeping" end
+	if impl.cutscene_active() then return false, "actor_in_cutscene" end
+	if impl.menu_visible() then return false, "game_menu_open" end
+	local device_ok, frame_delta = pcall(function() return device().f_time_delta end)
+	if device_ok and tonumber(frame_delta) ~= nil and tonumber(frame_delta) <= 0 then
+		return false, "game_paused"
+	end
+	return true, "ok", actor
+end
+
+function impl.send_status(now, force)
+	if not state.welcomed then return end
+	local ready, reason = impl.readiness(now)
+	local status = ready and "ready" or "waiting"
+	if force or status ~= state.last_status or reason ~= state.last_reason then
+		if impl.send({ "STATUS", status, reason }) then
+			state.last_status, state.last_reason = status, reason
+		end
+	end
+end
+
+function impl.remember(command_id, status, reason)
+	if state.recent[command_id] == nil then
+		state.recent_order[#state.recent_order + 1] = command_id
+	end
+	state.recent[command_id] = { status = status, reason = reason }
+	while #state.recent_order > C.RECENT_LIMIT do
+		local expired = table.remove(state.recent_order, 1)
+		state.recent[expired] = nil
+	end
+end
+
+function impl.result(command_id, status, reason, remember)
+	command_id = tostring(command_id or "invalid")
+	reason = tostring(reason or "unspecified")
+	if remember then impl.remember(command_id, status, reason) end
+	impl.send({ "RESULT", command_id, status, reason })
+end
+
+function impl.handle_command(fields, now)
+	local command, parse_error, parsed_id = pf_donation_protocol.parse_command(fields)
+	if command == nil then
+		impl.result(parsed_id or "invalid", "rejected", parse_error, true)
+		return
+	end
+	local previous = state.recent[command.command_id]
+	if previous then
+		impl.result(command.command_id, previous.status, previous.reason, false)
+		return
+	end
+	if not state.welcomed then
+		impl.result(command.command_id, "rejected", "handshake_required", true)
+		return
+	end
+	if state.pending ~= nil then
+		if command.command_id ~= state.pending.command.command_id then
+			impl.result(command.command_id, "deferred", "previous_action_pending", true)
+		end
+		return
+	end
+	local ready, reason, actor = impl.readiness(now)
+	if not ready then
+		impl.result(command.command_id, "deferred", reason, true)
+		return
+	end
+	if command.action_id == "god_mode" and
+		pf_donation_registry.get(command.action_id) == nil then
+		local module = rawget(_G, "pf_donation_action_invulnerability")
+		if type(module) == "table" and type(module.register) == "function" then
+			pcall(module.register)
+		end
+	end
+	local context = { actor = actor, now = now, command = command }
+	local ok, status, action_reason = pcall(pf_donation_registry.dispatch,
+		command.action_id, context, command.params)
+	if not ok then
+		if type(printf) == "function" then printf("[DonationBridge] dispatch failed: %s", tostring(status)) end
+		status, action_reason = "uncertain", "action_dispatch_failed"
+	end
+	if status == "pending" then
+		state.pending = context
+		return
+	end
+	-- Deferred commands are also remembered: the queue retries those with a NEW
+	-- command ID, while a result query must report the original outcome exactly.
+	impl.result(command.command_id, status, action_reason, true)
+end
+
+function impl.query_result(fields)
+	if #fields ~= 3 or not state.welcomed then return end
+	local command_id = tostring(fields[2] or "")
+	if #command_id < 1 or #command_id > 160 or command_id:find("[%z\1-\31\127]") then return end
+	if fields[3] ~= state.session_id then
+		impl.result(command_id, "uncertain", "game_session_changed", false)
+		return
+	end
+	-- Completion will send the original ACK; querying must not cancel or rerun it.
+	if state.pending ~= nil and state.pending.command.command_id == command_id then return end
+	local previous = state.recent[command_id]
+	if previous then
+		impl.result(command_id, previous.status, previous.reason, false)
+	else
+		-- A query NEVER dispatches an action, even if its result is unknown.
+		impl.result(command_id, "uncertain", "result_not_cached", false)
+	end
+end
+
+function impl.handle_event(fields, now)
+	local kind = tostring(fields[1] or "")
+	if kind == "WELCOME" then
+		if #fields ~= 3 or fields[2] ~= C.PROTOCOL or #tostring(fields[3] or "") > 64 then
+			impl.reset_session(true)
+			return false
+		end
+		state.welcomed = true
+		state.app_version = tostring(fields[3])
+		impl.send_status(now, true)
+	elseif kind == "PING" and #fields == 1 then
+		impl.send_status(now, true)
+		impl.send({ "PONG" })
+	elseif kind == "RESULT_QUERY" then
+		impl.query_result(fields)
+	elseif kind == "COMMAND" then
+		impl.handle_command(fields, now)
+	else
+		impl.reset_session(true)
+		return false
+	end
+	return true
+end
+
+function impl.update_once(now)
+	if not impl.try_attach(now) then return end
+	local events, poll_error = pf_donation_transport.poll(C.MAX_EVENTS)
+	for _, fields in ipairs(events) do
+		if not impl.handle_event(fields, now) then return end
+	end
+	if poll_error ~= nil then
+		impl.reset_session(false)
+		state.next_attach_ms = now + C.RETRY_MS
+		return
+	end
+	impl.send_status(now, false)
+end
+
+function update()
+	local now = impl.now()
+	if now < (state.next_update_ms or 0) then return end
+	state.next_update_ms = now + C.UPDATE_MS
+	pf_donation_registry.update(now)
+	if state.pending ~= nil then
+		local context = state.pending
+		local ok, status, reason = pcall(pf_donation_registry.poll, context.command.action_id, context, now)
+		if not ok then status, reason = "uncertain", "action_poll_failed" end
+		if status ~= "pending" then
+			state.pending = nil
+			impl.result(context.command.command_id, status, reason, true)
+		end
+	end
+	local ok, error_message = pcall(impl.update_once, now)
+	if not ok then
+		if type(printf) == "function" then printf("[DonationBridge] transport update failed: %s", tostring(error_message)) end
+		impl.reset_session(true)
+		state.next_attach_ms = now + C.RETRY_MS
+	end
+end
+
+function on_game_load()
+	local now = impl.now()
+	if state.pending ~= nil then
+		local command_id = state.pending.command.command_id
+		state.pending = nil
+		-- Never carry pre-load object IDs or fuel setters into a different save.
+		impl.result(command_id, "uncertain", "vehicle_save_loaded_before_completion", true)
+	end
+	pf_donation_registry.on_game_load()
+	state.loading_until_ms = now + C.LOAD_GRACE_MS
+	state.next_update_ms = 0
+	-- Loading a save must not discard the pipe or cached execution results.
+	-- Effects already executed before the load are never applied a second time.
+	if pf_donation_transport.is_connected() then
+		impl.send_status(now, true)
+	else
+		impl.reset_session(false)
+		state.next_attach_ms = 0
+	end
+end
+
+function get_state()
+	return {
+		connected = pf_donation_transport.is_connected(),
+		welcomed = state.welcomed == true,
+		app_version = state.app_version,
+		status = state.last_status,
+		reason = state.last_reason
+	}
+end

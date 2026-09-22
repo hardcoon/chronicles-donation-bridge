@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <Using Include="System.IO" />
+    <Using Include="System.Net.Http" />
+    <Compile Include="..\..\src\ChroniclesDonationBridge.App\Services\SingleInstanceGate.cs" Link="SingleInstanceGate.cs" />
+    <Compile Include="..\..\src\ChroniclesDonationBridge.App\Services\GameStatusPresentation.cs" Link="GameStatusPresentation.cs" />
+    <Compile Include="..\..\src\ChroniclesDonationBridge.App\Services\InventoryCatalogLoader.cs" Link="InventoryCatalogLoader.cs" />
+    <Compile Include="..\..\src\ChroniclesDonationBridge.App\ViewModels\ActionViewModels.cs" Link="ActionViewModels.cs" />
+    <Compile Include="..\..\src\ChroniclesDonationBridge.App\ViewModels\Mvvm.cs" Link="Mvvm.cs" />
+    <Compile Include="..\..\src\ChroniclesDonationBridge.App\Converters.cs" Link="Converters.cs" />
+    <Compile Include="..\..\src\ChroniclesDonationBridge.App\Services\DonationCurrencyPricing.cs" Link="DonationCurrencyPricing.cs" />
+    <Compile Include="..\..\src\ChroniclesDonationBridge.App\ViewModels\ActionBrowserViewModel.cs" Link="ActionBrowserViewModel.cs" />
+    <Compile Include="..\..\src\ChroniclesDonationBridge.App\ViewModels\ActionEditorViewModel.cs" Link="ActionEditorViewModel.cs" />
+    <Compile Include="..\..\src\ChroniclesDonationBridge.App\ActionCardPanel.cs" Link="ActionCardPanel.cs" />
+    <Compile Include="..\..\src\ChroniclesDonationBridge.App\CardToolbarPanel.cs" Link="CardToolbarPanel.cs" />
+    <Compile Include="..\..\src\ChroniclesDonationBridge.App\Services\ActionManifestLoader.cs" Link="ActionManifestLoader.cs" />
+    <Compile Include="..\..\src\ChroniclesDonationBridge.App\Services\FilePresetLoader.cs" Link="FilePresetLoader.cs" />
+    <Compile Include="..\..\src\ChroniclesDonationBridge.App\Services\AddonPackageManager.cs" Link="AddonPackageManager.cs" />
+    <Content Include="..\..\src\ChroniclesDonationBridge.App\MainWindow.xaml" Link="MainWindow.contract.xaml" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\game-addon\configs\pf_donation_actions.ltx" Link="pf_donation_actions.contract.ltx" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\game-addon\scripts\pf_donation_action_vehicle.script" Link="pf_donation_action_vehicle.contract.lua" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\game-addon\scripts\pf_donation_action_teleport_random.script" Link="pf_donation_action_teleport_random.contract.lua" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\game-addon\scripts\pf_donation_action_*.script" Link="file-presets\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <ProjectReference Include="..\..\src\ChroniclesDonationBridge.Core\ChroniclesDonationBridge.Core.csproj" />
+    <ProjectReference Include="..\..\src\ChroniclesDonationBridge.Persistence\ChroniclesDonationBridge.Persistence.csproj" />
+    <ProjectReference Include="..\..\src\ChroniclesDonationBridge.DonationAlerts\ChroniclesDonationBridge.DonationAlerts.csproj" />
+    <ProjectReference Include="..\..\src\ChroniclesDonationBridge.GameIpc\ChroniclesDonationBridge.GameIpc.csproj" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,129 @@
+--[[CDB_PRESET_V1
+{"schemaVersion":1,"handlerId":"teleport_random","displayName":"Случайный телепорт","description":"Перемещает персонажа на случайную безопасную вершину текущей локации в заданном диапазоне.","category":"player_state","cooldownSeconds":1,"parameterDefinitions":[{"key":"minimum_meters","displayName":"Минимум, м","kind":"Integer","minimum":10,"maximum":2000,"defaultValue":"25"},{"key":"maximum_meters","displayName":"Максимум, м","kind":"Integer","minimum":10,"maximum":2000,"defaultValue":"100"}],"parameters":{"minimum_meters":"25","maximum_meters":"100"}}
+CDB_PRESET_END]]
+local ACTION_ID = "teleport_random"
+local C = {
+	INVALID_VERTEX = 4294967295,
+	ATTEMPTS = 360,
+	GOLDEN_ANGLE = math.rad(137.507764)
+}
+local impl = {}
+
+function impl.parse(params)
+	for key in pairs(params) do
+		if key ~= "minimum_meters" and key ~= "maximum_meters" then
+			return nil, "parameter_not_supported"
+		end
+	end
+	local minimum = tonumber(tostring(params.minimum_meters or "25"))
+	local maximum = tonumber(tostring(params.maximum_meters or "100"))
+	if minimum == nil or maximum == nil or minimum < 10 or maximum > 2000 or
+		minimum > maximum then return nil, "teleport_distance_invalid" end
+	return { minimum = minimum, maximum = maximum }
+end
+
+function impl.valid_vertex(vertex_id)
+	return vertex_id ~= nil and vertex_id ~= C.INVALID_VERTEX and level.valid_vertex_id(vertex_id)
+end
+
+function impl.accessible_vertex(vertex_id)
+	if not impl.valid_vertex(vertex_id) then return false end
+	local accessible_ok, accessible = pcall(function()
+		return level.is_accessible_vertex_id(vertex_id)
+	end)
+	return accessible_ok and accessible == true
+end
+
+function impl.candidate(vertex_id, start_vertex, origin, options, target_distance, used)
+	if vertex_id == start_vertex or used[vertex_id] or not impl.accessible_vertex(vertex_id) then
+		return nil
+	end
+	used[vertex_id] = true
+	local position_ok, position = pcall(function() return level.vertex_position(vertex_id) end)
+	if not position_ok or position == nil then return nil end
+	local dx, dz = position.x - origin.x, position.z - origin.z
+	local distance = math.sqrt(dx * dx + dz * dz)
+	if distance < options.minimum or distance > options.maximum then return nil end
+	return {
+		position = vector():set(position.x, position.y + 0.15, position.z),
+		distance = distance,
+		delta = math.abs(distance - target_distance)
+	}
+end
+
+function impl.find_destination(actor, options)
+	local start_vertex = actor:level_vertex_id()
+	if not impl.valid_vertex(start_vertex) then return nil end
+	local origin = actor:position()
+	-- Choose the distance once, before looking at navigation vertices. The
+	-- search then approximates this target instead of favouring the minimum.
+	local target_distance = options.minimum
+	if options.maximum > options.minimum then
+		target_distance = options.minimum +
+			(options.maximum - options.minimum) * math.random()
+	end
+	local base_angle = math.random() * math.pi * 2
+	local used = {}
+	local best = nil
+	for attempt = 0, C.ATTEMPTS - 1 do
+		local angle = base_angle + attempt * C.GOLDEN_ANGLE
+		local direction = vector():set(math.cos(angle), 0, math.sin(angle))
+		local desired = vector():set(
+			origin.x + direction.x * target_distance,
+			origin.y,
+			origin.z + direction.z * target_distance)
+
+		-- Chronicles/IX-Ray exposes the same point-to-navigation lookup used by
+		-- its stash tools. It is more reliable over long distances than walking
+		-- a ray from the actor's current navigation vertex.
+		local direct_ok, direct_vertex = pcall(function()
+			return level.vertex_id(desired)
+		end)
+		if direct_ok then
+			local candidate = impl.candidate(direct_vertex, start_vertex, origin,
+				options, target_distance, used)
+			if candidate ~= nil and (best == nil or candidate.delta < best.delta) then
+				best = candidate
+			end
+		end
+
+		-- Keep the older API as a fallback for points that do not map directly
+		-- to the current level graph.
+		local direction_ok, direction_vertex = pcall(function()
+			return level.vertex_in_direction(start_vertex, direction, target_distance)
+		end)
+		if direction_ok then
+			local candidate = impl.candidate(direction_vertex, start_vertex, origin,
+				options, target_distance, used)
+			if candidate ~= nil and (best == nil or candidate.delta < best.delta) then
+				best = candidate
+			end
+		end
+	end
+	if best == nil then return nil end
+	return best.position, best.distance, target_distance
+end
+
+function impl.can_execute(context, params)
+	local options, error_code = impl.parse(params)
+	if options == nil then return false, "rejected", error_code end
+	local destination, distance, target_distance = impl.find_destination(context.actor, options)
+	if destination == nil then return false, "deferred", "safe_teleport_destination_unavailable" end
+	context.teleport_destination = destination
+	context.teleport_distance = distance
+	context.teleport_target_distance = target_distance
+	return true
+end
+
+function impl.execute(context)
+	if context.teleport_destination == nil then return "rejected", "teleport_destination_missing" end
+	local ok = pcall(function() context.actor:set_actor_position(context.teleport_destination) end)
+	if not ok then return "uncertain", "teleport_result_unknown" end
+	return "executed", "teleported_randomly_" .. tostring(math.floor(context.teleport_distance + 0.5)) .. "m"
+end
+
+pf_donation_registry.register(ACTION_ID, {
+	source = "scripts\\pf_donation_action_teleport_random.script",
+	can_execute = impl.can_execute,
+	execute = impl.execute
+})

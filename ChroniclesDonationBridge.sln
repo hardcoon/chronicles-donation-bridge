@@ -1,0 +1,48 @@
+﻿Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ChroniclesDonationBridge.Core", "src\ChroniclesDonationBridge.Core\ChroniclesDonationBridge.Core.csproj", "{12477B73-B394-4AB1-A015-30D3D382166E}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ChroniclesDonationBridge.Persistence", "src\ChroniclesDonationBridge.Persistence\ChroniclesDonationBridge.Persistence.csproj", "{730013D1-FDC9-42D9-91DF-37323E90A8D5}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ChroniclesDonationBridge.DonationAlerts", "src\ChroniclesDonationBridge.DonationAlerts\ChroniclesDonationBridge.DonationAlerts.csproj", "{5DBA13DD-B4F5-40AA-8213-B700198CDE12}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ChroniclesDonationBridge.GameIpc", "src\ChroniclesDonationBridge.GameIpc\ChroniclesDonationBridge.GameIpc.csproj", "{27277D4C-FCDA-4757-8B29-24C5A3F05AC0}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ChroniclesDonationBridge.App", "src\ChroniclesDonationBridge.App\ChroniclesDonationBridge.App.csproj", "{F98257C5-DC93-4C2E-B0EA-42EBB70240EE}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ChroniclesDonationBridge.Tests", "tests\ChroniclesDonationBridge.Tests\ChroniclesDonationBridge.Tests.csproj", "{D04A0DF6-35EC-42EC-822F-6587C3225388}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{12477B73-B394-4AB1-A015-30D3D382166E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{12477B73-B394-4AB1-A015-30D3D382166E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{12477B73-B394-4AB1-A015-30D3D382166E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{12477B73-B394-4AB1-A015-30D3D382166E}.Release|Any CPU.Build.0 = Release|Any CPU
+		{730013D1-FDC9-42D9-91DF-37323E90A8D5}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{730013D1-FDC9-42D9-91DF-37323E90A8D5}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{730013D1-FDC9-42D9-91DF-37323E90A8D5}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{730013D1-FDC9-42D9-91DF-37323E90A8D5}.Release|Any CPU.Build.0 = Release|Any CPU
+		{5DBA13DD-B4F5-40AA-8213-B700198CDE12}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5DBA13DD-B4F5-40AA-8213-B700198CDE12}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5DBA13DD-B4F5-40AA-8213-B700198CDE12}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5DBA13DD-B4F5-40AA-8213-B700198CDE12}.Release|Any CPU.Build.0 = Release|Any CPU
+		{27277D4C-FCDA-4757-8B29-24C5A3F05AC0}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{27277D4C-FCDA-4757-8B29-24C5A3F05AC0}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{27277D4C-FCDA-4757-8B29-24C5A3F05AC0}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{27277D4C-FCDA-4757-8B29-24C5A3F05AC0}.Release|Any CPU.Build.0 = Release|Any CPU
+		{F98257C5-DC93-4C2E-B0EA-42EBB70240EE}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F98257C5-DC93-4C2E-B0EA-42EBB70240EE}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F98257C5-DC93-4C2E-B0EA-42EBB70240EE}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F98257C5-DC93-4C2E-B0EA-42EBB70240EE}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D04A0DF6-35EC-42EC-822F-6587C3225388}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D04A0DF6-35EC-42EC-822F-6587C3225388}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D04A0DF6-35EC-42EC-822F-6587C3225388}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D04A0DF6-35EC-42EC-822F-6587C3225388}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal

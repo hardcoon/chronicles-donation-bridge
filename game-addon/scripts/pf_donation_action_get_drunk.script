@@ -1,0 +1,89 @@
+--[[CDB_PRESET_V1
+{"schemaVersion":1,"handlerId":"get_drunk","displayName":"Наложить эффект опьянения","description":"Включает штатный эффект опьянения на выбранное время, не создавая и не расходуя предметы персонажа.","category":"player_state","cooldownSeconds":1,"parameterDefinitions":[{"key":"duration_seconds","displayName":"Длительность опьянения, сек.","kind":"Integer","minimum":5,"maximum":300,"defaultValue":"30"}],"parameters":{"duration_seconds":"30"}}
+CDB_PRESET_END]]
+local ACTION_ID = "get_drunk"
+local STATE_KEY = "__pf_donation_drunk_effect_v1"
+local C = { EFFECT_ID = 19781, DEFAULT_DURATION_SECONDS = 30 }
+local state = rawget(_G, STATE_KEY)
+local impl = {}
+
+if type(state) ~= "table" then
+	state = { expires_at = 0 }
+	rawset(_G, STATE_KEY, state)
+end
+
+function impl.parse(params)
+	for key in pairs(params) do
+		if key ~= "duration_seconds" then return nil, "parameter_not_supported" end
+	end
+	local text = tostring(params.duration_seconds or C.DEFAULT_DURATION_SECONDS)
+	if not text:match("^%d+$") then return nil, "drunk_duration_invalid" end
+	local duration_seconds = tonumber(text)
+	if duration_seconds == nil or duration_seconds < 5 or duration_seconds > 300 then
+		return nil, "drunk_duration_invalid"
+	end
+	return duration_seconds
+end
+
+function impl.can_execute(context, params)
+	local duration_seconds, error_code = impl.parse(params)
+	if duration_seconds == nil then return false, "rejected", error_code end
+	if level == nil or type(level.add_complex_effector) ~= "function" or
+		type(level.remove_complex_effector) ~= "function" then
+		return false, "deferred", "drunk_effector_unavailable"
+	end
+	local ini = system_ini()
+	if ini == nil or not ini:section_exist("effector_alcohol") then
+		return false, "rejected", "drunk_effector_section_missing"
+	end
+	context.action_options = { duration_seconds = duration_seconds }
+	return true
+end
+
+function impl.remove_effect()
+	-- remove_complex_effector dereferences the native Actor pointer. During a
+	-- level transition the registry still receives update/on_game_load while
+	-- that pointer can already be absent, so never call the binding then.
+	if db == nil or db.actor == nil or level == nil or
+		type(level.remove_complex_effector) ~= "function" then return false end
+	return pcall(function() level.remove_complex_effector(C.EFFECT_ID) end)
+end
+
+function impl.execute(context, params)
+	local options = context.action_options
+	if options == nil then
+		local duration_seconds = impl.parse(params)
+		if duration_seconds == nil then return "rejected", "drunk_parameters_invalid" end
+		options = { duration_seconds = duration_seconds }
+	end
+	-- A parented inventory item is not guaranteed to be online in the same
+	-- engine tick. Apply IX-Ray's own alcohol camera/postprocess section
+	-- directly instead of reporting a silently failed actor:eat call.
+	impl.remove_effect()
+	local applied = pcall(function()
+		level.add_complex_effector("effector_alcohol", C.EFFECT_ID)
+	end)
+	if not applied then return "uncertain", "drunk_effector_result_unknown" end
+	local now = context.now or (time_global and time_global() or 0)
+	state.expires_at = now + options.duration_seconds * 1000
+	return "executed", "drunk_effect_seconds_" .. tostring(options.duration_seconds)
+end
+
+function impl.update(now)
+	if (state.expires_at or 0) <= 0 or now < state.expires_at then return end
+	impl.remove_effect()
+	state.expires_at = 0
+end
+
+function impl.on_game_load()
+	impl.remove_effect()
+	state.expires_at = 0
+end
+
+pf_donation_registry.register(ACTION_ID, {
+	source = "scripts\\pf_donation_action_get_drunk.script",
+	can_execute = impl.can_execute,
+	execute = impl.execute,
+	update = impl.update,
+	on_game_load = impl.on_game_load
+})

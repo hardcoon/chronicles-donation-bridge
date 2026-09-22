@@ -1,0 +1,17 @@
+--[[CDB_PRESET_V1
+{"schemaVersion":1,"handlerId":"random_all_presets","displayName":"Рандом по ВСЕМ пресетам","description":"Выбирает эффект из всего каталога и создаёт безопасные случайные параметры; выдача предметов исключена.","category":"world","cooldownSeconds":1,"parameterDefinitions":[],"parameters":{}}
+CDB_PRESET_END]]
+local ACTION_ID = "random_all_presets"
+local impl = {}
+
+-- This is a bridge-side meta action. The Windows application resolves it to
+-- one safe catalog preset before any command reaches Lua. Fail closed if a
+-- protocol or third-party client attempts to dispatch the meta action itself.
+function impl.execute()
+	return "rejected", "random_all_presets_must_be_resolved_by_bridge"
+end
+
+pf_donation_registry.register(ACTION_ID, {
+	source = "scripts\\pf_donation_action_random_all_presets.script",
+	execute = impl.execute
+})

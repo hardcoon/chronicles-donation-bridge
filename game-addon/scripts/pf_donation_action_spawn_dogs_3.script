@@ -1,0 +1,98 @@
+local ACTION_ID = "spawn_dogs_3"
+local C = { SECTION = "dog_normal", COUNT = 3, INVALID_VERTEX = 4294967295,
+	RADII = { 15, 17.5, 20, 22.5, 25 }, ATTEMPTS = 240 }
+local impl = {}
+
+function impl.valid_vertex(vertex_id)
+	return vertex_id ~= nil and vertex_id ~= C.INVALID_VERTEX and
+		level.valid_vertex_id(vertex_id)
+end
+
+function impl.find_points(actor, count)
+	local actor_position = actor:position()
+	local start_vertex = actor:level_vertex_id()
+	if not impl.valid_vertex(start_vertex) then return nil, "actor_vertex_invalid" end
+	local points, used = {}, {}
+	local base_angle = math.random() * math.pi * 2
+	for attempt = 0, C.ATTEMPTS - 1 do
+		local radius = C.RADII[(attempt % #C.RADII) + 1]
+		local angle = base_angle + math.rad((attempt * 137.507764) % 360)
+		local direction = vector():set(math.cos(angle), 0, math.sin(angle))
+		local vertex_id = level.vertex_in_direction(start_vertex, direction, radius)
+		if impl.valid_vertex(vertex_id) and not used[vertex_id] then
+			local snapped = level.vertex_position(vertex_id)
+			local dx, dz = snapped.x - actor_position.x, snapped.z - actor_position.z
+			local distance_sqr = dx * dx + dz * dz
+			if distance_sqr >= 15 * 15 and distance_sqr <= 25 * 25 and
+				math.abs(snapped.y - actor_position.y) <= 4 then
+				used[vertex_id] = true
+				points[#points + 1] = {
+					vertex_id = vertex_id,
+					position = vector():set(snapped.x, snapped.y + 0.10, snapped.z)
+				}
+				if #points == count then return points end
+			end
+		end
+	end
+	return nil, "safe_spawn_vertices_unavailable"
+end
+
+function impl.rollback(created)
+	local complete = true
+	for index = #created, 1, -1 do
+		local ok = pcall(function() alife():release(created[index], true) end)
+		if not ok then complete = false end
+	end
+	return complete
+end
+
+function impl.can_execute(context, params)
+	for key in pairs(params) do
+		if key ~= "species" and key ~= "strength" and key ~= "count" then
+			return false, "rejected", "parameter_not_supported"
+		end
+	end
+	if tostring(params.species or "dog"):lower() ~= "dog" or
+		tostring(params.strength or "medium"):lower() ~= "medium" or
+		tostring(params.count or "3") ~= "3" then
+		return false, "rejected", "dog_preset_parameters_fixed"
+	end
+	if alife == nil or alife() == nil then
+		return false, "deferred", "alife_unavailable"
+	end
+	local ini = system_ini()
+	if ini == nil or not ini:section_exist(C.SECTION) then
+		return false, "rejected", "dog_section_missing"
+	end
+	return true
+end
+
+function impl.execute(context)
+	local points, point_error = impl.find_points(context.actor, C.COUNT)
+	if points == nil then return "deferred", point_error end
+	local created = {}
+	for _, point in ipairs(points) do
+		local ok, object = pcall(function()
+			return alife():create(C.SECTION, point.position, point.vertex_id,
+				context.actor:game_vertex_id())
+		end)
+		if not ok then
+			impl.rollback(created)
+			return "uncertain", "dog_spawn_failed_state_unknown"
+		end
+		if object == nil then
+			if not impl.rollback(created) then
+				return "uncertain", "dog_spawn_failed_rollback_incomplete"
+			end
+			return "rejected", "dog_spawn_failed_rolled_back"
+		end
+		created[#created + 1] = object
+	end
+	return "executed", "spawned_3_dog_normal"
+end
+
+pf_donation_registry.register(ACTION_ID, {
+	source = "scripts\\pf_donation_action_spawn_dogs_3.script",
+	can_execute = impl.can_execute,
+	execute = impl.execute
+})

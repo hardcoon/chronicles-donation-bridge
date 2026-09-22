@@ -1,0 +1,6 @@
+--[[CDB_PRESET_V1
+{"schemaVersion":1,"handlerId":"explode_nearest_vehicle","displayName":"Взорвать ближайший транспорт","description":"Взрывает одну ближайшую несюжетную машину в заданном радиусе до 2000 м. Взрыв может ранить персонажа и уничтожить вещи в багажнике.","category":"world","cooldownSeconds":1,"parameterDefinitions":[{"key":"radius_meters","displayName":"Радиус поиска, м","kind":"Integer","minimum":1,"maximum":2000,"defaultValue":"5"}],"parameters":{"radius_meters":"5"}}
+CDB_PRESET_END]]
+-- Метаданные отдельного пресета. IX-Ray-обработчик остаётся в
+-- pf_donation_action_vehicle.script, чтобы не дублировать регистрацию и общую
+-- безопасную логику транспорта.

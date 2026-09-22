@@ -1,0 +1,39 @@
+--[[CDB_PRESET_V1
+{"schemaVersion":1,"handlerId":"change_health","displayName":"Изменить здоровье","description":"Добавляет или отнимает указанный процент максимального здоровья.","category":"player_state","cooldownSeconds":1,"parameterDefinitions":[{"key":"percent","displayName":"Изменение, %","kind":"Percent","minimum":-100,"maximum":100,"defaultValue":"25"}],"parameters":{"percent":"25"}}
+CDB_PRESET_END]]
+local ACTION_ID = "change_health"
+local DEFAULT_PERCENT = 25
+local impl = {}
+
+function impl.parse(params)
+	for key in pairs(params) do
+		if key ~= "percent" then return nil, "parameter_not_supported" end
+	end
+	local percent = tonumber(params.percent or DEFAULT_PERCENT)
+	if percent == nil or percent < -100 or percent > 100 then
+		return nil, "health_percent_invalid"
+	end
+	return percent
+end
+
+function impl.can_execute(context, params)
+	local percent, error_code = impl.parse(params)
+	if percent == nil then return false, "rejected", error_code end
+	if context.actor == nil then return false, "deferred", "actor_unavailable" end
+	context.health_percent = percent
+	return true
+end
+
+function impl.execute(context, params)
+	local percent = context.health_percent
+	if percent == nil then percent = impl.parse(params) end
+	if percent == nil then return "rejected", "health_percent_invalid" end
+	context.actor.health = percent / 100
+	return "executed", "health_changed_percent_" .. tostring(percent)
+end
+
+pf_donation_registry.register(ACTION_ID, {
+	source = "scripts\\pf_donation_action_change_health.script",
+	can_execute = impl.can_execute,
+	execute = impl.execute
+})

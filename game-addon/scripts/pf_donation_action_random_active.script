@@ -1,0 +1,17 @@
+--[[CDB_PRESET_V1
+{"schemaVersion":1,"handlerId":"random_active","displayName":"Рандомный по активным пресетам","description":"Выбирает один из остальных доступных активных вариантов; выбор выполняет внешняя программа.","category":"world","cooldownSeconds":1,"parameterDefinitions":[],"parameters":{}}
+CDB_PRESET_END]]
+local ACTION_ID = "random_active"
+local impl = {}
+
+-- This is a bridge-side meta action. The Windows application resolves it to
+-- one of the other active action instances before any command reaches Lua.
+-- Registering a fail-closed fallback keeps protocol mistakes explicit.
+function impl.execute()
+	return "rejected", "random_action_must_be_resolved_by_bridge"
+end
+
+pf_donation_registry.register(ACTION_ID, {
+	source = "scripts\\pf_donation_action_random_active.script",
+	execute = impl.execute
+})

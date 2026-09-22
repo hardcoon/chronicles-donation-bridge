@@ -1,0 +1,81 @@
+--[[CDB_PRESET_V1
+{"schemaVersion":1,"handlerId":"drop_active_weapon","displayName":"Выбить оружие","description":"Ждёт появления обычного оружия в руках указанное время, затем выбрасывает его.","category":"inventory","cooldownSeconds":1,"parameterDefinitions":[{"key":"wait_seconds","displayName":"Ждать оружие в руках, сек.","kind":"Integer","minimum":0,"maximum":60,"defaultValue":"10"}],"parameters":{"wait_seconds":"10"}}
+CDB_PRESET_END]]
+local ACTION_ID = "drop_active_weapon"
+local impl = {}
+
+function impl.parse(params)
+	for key in pairs(params) do
+		if key ~= "wait_seconds" then return nil, "parameter_not_supported" end
+	end
+	local text = tostring(params.wait_seconds or "10")
+	if not text:match("^%d+$") then return nil, "weapon_wait_invalid" end
+	local seconds = tonumber(text)
+	if seconds == nil or seconds < 0 or seconds > 60 then
+		return nil, "weapon_wait_invalid"
+	end
+	return seconds
+end
+
+function impl.find_weapon(actor)
+	if actor == nil then return nil, nil, "actor_unavailable" end
+	local slot_ok, slot = pcall(function() return tonumber(actor:active_slot()) or 0 end)
+	if not slot_ok or (slot ~= 2 and slot ~= 3) then
+		return nil, nil, "active_weapon_required"
+	end
+	local item_ok, item = pcall(function() return actor:active_item() end)
+	if not item_ok or item == nil then return nil, nil, "active_weapon_required" end
+	local section_ok, section = pcall(function() return item:section() end)
+	local ini = system_ini()
+	if not section_ok or section == nil or ini == nil or not ini:section_exist(section) then
+		return nil, nil, "weapon_section_missing"
+	end
+	if ini:line_exist(section, "quest_item") and ini:r_bool(section, "quest_item") then
+		return nil, nil, "weapon_is_quest_item"
+	end
+	if ini:line_exist(section, "can_trade") and not ini:r_bool(section, "can_trade") then
+		return nil, nil, "weapon_is_protected"
+	end
+	return item, section
+end
+
+function impl.can_execute(context, params)
+	local wait_seconds, error_code = impl.parse(params)
+	if wait_seconds == nil then return false, "rejected", error_code end
+	if context.actor == nil then return false, "deferred", "actor_unavailable" end
+	if system_ini() == nil then return false, "deferred", "system_ini_unavailable" end
+	context.weapon_wait_seconds = wait_seconds
+	return true
+end
+
+function impl.drop(actor, item, section)
+	local ok = pcall(function() actor:drop_item(item) end)
+	if not ok then return "uncertain", "weapon_drop_failed" end
+	return "executed", "weapon_dropped_" .. tostring(section)
+end
+
+function impl.execute(context)
+	local item, section, error_code = impl.find_weapon(context.actor)
+	if item ~= nil then return impl.drop(context.actor, item, section) end
+	local wait_seconds = tonumber(context.weapon_wait_seconds) or 0
+	if wait_seconds <= 0 then return "rejected", error_code end
+	context.weapon_wait_deadline = (tonumber(context.now) or 0) + wait_seconds * 1000
+	return "pending", "waiting_for_active_weapon"
+end
+
+function impl.poll(context, now)
+	local actor = db and db.actor or context.actor
+	local item, section, error_code = impl.find_weapon(actor)
+	if item ~= nil then return impl.drop(actor, item, section) end
+	if now < (tonumber(context.weapon_wait_deadline) or 0) then
+		return "pending", "waiting_for_active_weapon"
+	end
+	return "rejected", error_code or "active_weapon_required"
+end
+
+pf_donation_registry.register(ACTION_ID, {
+	source = "scripts\\pf_donation_action_drop_active_weapon.script",
+	can_execute = impl.can_execute,
+	execute = impl.execute,
+	poll = impl.poll
+})

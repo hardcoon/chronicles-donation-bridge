@@ -1,0 +1,104 @@
+--[[CDB_PRESET_V1
+{"schemaVersion":1,"handlerId":"change_needs","displayName":"Изменить голод и жажду","description":"Одновременно изменяет обе потребности: плюс утоляет, минус усиливает, ноль оставляет без изменения.","category":"player_state","cooldownSeconds":1,"parameterDefinitions":[{"key":"hunger_percent","displayName":"Голод, % (+ утолить / − усилить)","kind":"Percent","minimum":-100,"maximum":100,"defaultValue":"25"},{"key":"thirst_percent","displayName":"Жажда, % (+ утолить / − усилить)","kind":"Percent","minimum":-100,"maximum":100,"defaultValue":"25"}],"parameters":{"hunger_percent":"25","thirst_percent":"25"}}
+CDB_PRESET_END]]
+local ACTION_ID = "change_needs"
+local C = {
+	DEFAULT_HUNGER_PERCENT = 25,
+	DEFAULT_THIRST_PERCENT = 25,
+	CONDITION_TOLERANCE = 0.002
+}
+local impl = {}
+
+function impl.parse_percent(value, error_code)
+	local text = tostring(value)
+	local integer = text:match("^[+-]?%d+$") ~= nil
+	local decimal = text:match("^[+-]?%d+%.%d+$") ~= nil
+	if #text > 12 or (not integer and not decimal) then return nil, error_code end
+	local percent = tonumber(text)
+	if percent == nil or percent ~= percent or percent < -100 or percent > 100 then
+		return nil, error_code
+	end
+	return percent
+end
+
+function impl.parse(params)
+	for key in pairs(params) do
+		if key ~= "hunger_percent" and key ~= "thirst_percent" then
+			return nil, "parameter_not_supported"
+		end
+	end
+	local hunger_percent, hunger_error = impl.parse_percent(
+		params.hunger_percent or C.DEFAULT_HUNGER_PERCENT, "hunger_percent_invalid")
+	if hunger_percent == nil then return nil, hunger_error end
+	local thirst_percent, thirst_error = impl.parse_percent(
+		params.thirst_percent or C.DEFAULT_THIRST_PERCENT, "thirst_percent_invalid")
+	if thirst_percent == nil then return nil, thirst_error end
+	return { hunger_percent = hunger_percent, thirst_percent = thirst_percent }
+end
+
+function impl.valid_condition(value)
+	return type(value) == "number" and value == value and
+		value >= -C.CONDITION_TOLERANCE and value <= 1 + C.CONDITION_TOLERANCE
+end
+
+function impl.read_needs(actor)
+	local ok, hunger, thirst = pcall(function()
+		return actor.satiety, actor.thirst
+	end)
+	if not ok or not impl.valid_condition(hunger) or not impl.valid_condition(thirst) then
+		return nil
+	end
+	return { hunger = hunger, thirst = thirst }
+end
+
+function impl.clamp_condition(value)
+	return math.max(0, math.min(1, value))
+end
+
+function impl.can_execute(context, params)
+	local options, error_code = impl.parse(params)
+	if options == nil then return false, "rejected", error_code end
+	if context.actor == nil then return false, "deferred", "actor_unavailable" end
+	if impl.read_needs(context.actor) == nil then
+		return false, "deferred", "needs_state_unavailable"
+	end
+	context.action_options = options
+	return true
+end
+
+function impl.execute(context, params)
+	local options = context.action_options
+	if options == nil then options = impl.parse(params) end
+	if options == nil then return "rejected", "needs_parameters_invalid" end
+	if context.actor == nil then return "deferred", "actor_unavailable" end
+	local before = impl.read_needs(context.actor)
+	if before == nil then return "deferred", "needs_state_unavailable" end
+	local applied, after_hunger, after_thirst = pcall(function()
+		-- The IX-Ray bindings apply deltas and clamp the resulting values to 0..1.
+		context.actor.satiety = options.hunger_percent / 100
+		context.actor.thirst = options.thirst_percent / 100
+		return context.actor.satiety, context.actor.thirst
+	end)
+	if not applied then return "uncertain", "needs_change_result_unknown" end
+	if not impl.valid_condition(after_hunger) or not impl.valid_condition(after_thirst) then
+		return "uncertain", "needs_confirmation_unavailable"
+	end
+	local expected_hunger = impl.clamp_condition(
+		before.hunger + options.hunger_percent / 100)
+	local expected_thirst = impl.clamp_condition(
+		before.thirst + options.thirst_percent / 100)
+	if math.abs(after_hunger - expected_hunger) > C.CONDITION_TOLERANCE or
+		math.abs(after_thirst - expected_thirst) > C.CONDITION_TOLERANCE then
+		return "uncertain", "needs_confirmation_mismatch"
+	end
+	return "executed", string.format(
+		"needs_confirmed_hunger_%.2f_to_%.2f_thirst_%.2f_to_%.2f",
+		before.hunger * 100, after_hunger * 100,
+		before.thirst * 100, after_thirst * 100)
+end
+
+pf_donation_registry.register(ACTION_ID, {
+	source = "scripts\\pf_donation_action_change_needs.script",
+	can_execute = impl.can_execute,
+	execute = impl.execute
+})

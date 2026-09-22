@@ -1,0 +1,158 @@
+local PIPE_PATH = "\\\\.\\pipe\\ChroniclesDonationBridge.v1"
+local STATE_KEY = "__pf_donation_transport_v1"
+local ffi_ok, ffi = pcall(require, "ffi")
+local kernel32 = nil
+local impl = {}
+
+if ffi_ok then
+	pcall(ffi.cdef, [[
+		typedef unsigned long PFDA_DWORD;
+		typedef int PFDA_BOOL;
+		typedef void* PFDA_HANDLE;
+		PFDA_BOOL __stdcall WaitNamedPipeA(const char* name, PFDA_DWORD timeout);
+		PFDA_HANDLE __stdcall CreateFileA(const char* name, PFDA_DWORD access,
+			PFDA_DWORD share, void* security, PFDA_DWORD creation,
+			PFDA_DWORD flags, PFDA_HANDLE template_file);
+		PFDA_BOOL __stdcall PeekNamedPipe(PFDA_HANDLE pipe, void* buffer,
+			PFDA_DWORD size, PFDA_DWORD* read, PFDA_DWORD* available, PFDA_DWORD* left);
+		PFDA_BOOL __stdcall ReadFile(PFDA_HANDLE file, void* buffer,
+			PFDA_DWORD size, PFDA_DWORD* read, void* overlapped);
+		PFDA_BOOL __stdcall WriteFile(PFDA_HANDLE file, const void* buffer,
+			PFDA_DWORD size, PFDA_DWORD* written, void* overlapped);
+		PFDA_BOOL __stdcall CloseHandle(PFDA_HANDLE object);
+		PFDA_DWORD __stdcall GetLastError(void);
+		PFDA_DWORD __stdcall GetCurrentProcessId(void);
+	]])
+	local loaded, library = pcall(ffi.load, "kernel32")
+	if loaded then kernel32 = library end
+end
+
+local state = rawget(_G, STATE_KEY)
+if type(state) ~= "table" then
+	state = { pipe = nil, connected = false, read_buffer = "" }
+	rawset(_G, STATE_KEY, state)
+end
+
+function impl.invalid_handle(handle)
+	if handle == nil or not ffi_ok then return true end
+	return tonumber(ffi.cast("intptr_t", handle)) == -1
+end
+
+function impl.owned_handle(handle)
+	if impl.invalid_handle(handle) then return handle end
+	return ffi.gc(handle, function(value)
+		if kernel32 ~= nil then pcall(kernel32.CloseHandle, value) end
+	end)
+end
+
+function disconnect()
+	if state.pipe ~= nil and not impl.invalid_handle(state.pipe) and kernel32 ~= nil then
+		local handle = state.pipe
+		ffi.gc(handle, nil)
+		pcall(kernel32.CloseHandle, handle)
+	end
+	state.pipe = nil
+	state.connected = false
+	state.read_buffer = ""
+end
+
+function available()
+	return ffi_ok and kernel32 ~= nil
+end
+
+function connect()
+	if state.connected and not impl.invalid_handle(state.pipe) then return true, "existing" end
+	disconnect()
+	if not available() then return false, "ffi_unavailable" end
+	if kernel32.WaitNamedPipeA(PIPE_PATH, 0) == 0 then
+		return false, "pipe_unavailable_" .. tostring(kernel32.GetLastError())
+	end
+	local pipe = kernel32.CreateFileA(PIPE_PATH, 0xC0000000, 0, nil, 3, 0, nil)
+	if impl.invalid_handle(pipe) then
+		return false, "pipe_attach_failed_" .. tostring(kernel32.GetLastError())
+	end
+	state.pipe = impl.owned_handle(pipe)
+	state.connected = true
+	state.read_buffer = ""
+	return true, "attached"
+end
+
+function send(fields)
+	if not state.connected or impl.invalid_handle(state.pipe) then
+		return false, "pipe_not_connected"
+	end
+	local data, encode_error = pf_donation_protocol.encode_fields(fields)
+	if data == nil then return false, encode_error end
+	local written = ffi.new("PFDA_DWORD[1]")
+	if kernel32.WriteFile(state.pipe, data, #data, written, nil) == 0 or
+		tonumber(written[0]) ~= #data then
+		local error_code = "pipe_write_failed_" .. tostring(kernel32.GetLastError())
+		disconnect()
+		return false, error_code
+	end
+	return true
+end
+
+function impl.extract_events(events, max_events)
+	while #events < max_events do
+		local delimiter = state.read_buffer:find("\n", 1, true)
+		if not delimiter then
+			if #state.read_buffer + 1 > pf_donation_protocol.max_wire_bytes() then
+				return false, "wire_message_too_large"
+			end
+			return true
+		end
+		if delimiter > pf_donation_protocol.max_wire_bytes() then
+			return false, "wire_message_too_large"
+		end
+		local line = state.read_buffer:sub(1, delimiter - 1):gsub("\r$", "")
+		state.read_buffer = state.read_buffer:sub(delimiter + 1)
+		if line ~= "" then
+			local fields, decode_error = pf_donation_protocol.decode_line(line)
+			if fields == nil then return false, decode_error end
+			events[#events + 1] = fields
+		end
+	end
+	return true
+end
+
+function poll(max_events)
+	local events = {}
+	if not state.connected or impl.invalid_handle(state.pipe) then
+		return events, "pipe_not_connected"
+	end
+	max_events = math.max(1, math.min(tonumber(max_events) or 8, 32))
+	local extracted, extract_error = impl.extract_events(events, max_events)
+	if not extracted then disconnect() return events, extract_error end
+	while #events < max_events do
+		local available_bytes = ffi.new("PFDA_DWORD[1]")
+		if kernel32.PeekNamedPipe(state.pipe, nil, 0, nil, available_bytes, nil) == 0 then
+			local error_code = "pipe_read_failed_" .. tostring(kernel32.GetLastError())
+			disconnect()
+			return events, error_code
+		end
+		local count = tonumber(available_bytes[0]) or 0
+		if count <= 0 then break end
+		count = math.min(count, 4096)
+		local buffer = ffi.new("char[?]", count)
+		local bytes_read = ffi.new("PFDA_DWORD[1]")
+		if kernel32.ReadFile(state.pipe, buffer, count, bytes_read, nil) == 0 then
+			local error_code = "pipe_read_failed_" .. tostring(kernel32.GetLastError())
+			disconnect()
+			return events, error_code
+		end
+		state.read_buffer = state.read_buffer .. ffi.string(buffer, tonumber(bytes_read[0]))
+		extracted, extract_error = impl.extract_events(events, max_events)
+		if not extracted then disconnect() return events, extract_error end
+	end
+	return events, nil
+end
+
+function is_connected()
+	return state.connected == true and not impl.invalid_handle(state.pipe)
+end
+
+function process_id()
+	if not available() then return 0 end
+	return tonumber(kernel32.GetCurrentProcessId()) or 0
+end

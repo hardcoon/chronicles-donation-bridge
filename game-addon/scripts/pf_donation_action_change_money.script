@@ -1,0 +1,60 @@
+--[[CDB_PRESET_V1
+{"schemaVersion":1,"handlerId":"change_money","displayName":"Изменить деньги","description":"Положительная сумма добавляет игровые деньги, отрицательная отнимает; баланс не опускается ниже нуля.","category":"inventory","cooldownSeconds":1,"parameterDefinitions":[{"key":"amount","displayName":"Сумма, ₽ (+/−)","kind":"Integer","minimum":-1000000,"maximum":1000000,"defaultValue":"1000"}],"parameters":{"amount":"1000"}}
+CDB_PRESET_END]]
+local ACTION_ID = "change_money"
+local C = { DEFAULT_DELTA = 1000, MAX_ABS_DELTA = 1000000, MAX_BALANCE = 2000000000 }
+local impl = {}
+
+function impl.parse(params)
+	for key in pairs(params) do
+		if key ~= "amount" then return nil, "parameter_not_supported" end
+	end
+	local text = tostring(params.amount or C.DEFAULT_DELTA)
+	if not text:match("^[+-]?%d+$") then return nil, "money_delta_invalid" end
+	local delta = tonumber(text)
+	if delta == nil or delta ~= math.floor(delta) or
+		math.abs(delta) > C.MAX_ABS_DELTA then
+		return nil, "money_delta_invalid"
+	end
+	return delta
+end
+
+function impl.can_execute(context, params)
+	local delta, error_code = impl.parse(params)
+	if delta == nil then return false, "rejected", error_code end
+	local ok, balance = pcall(function() return context.actor:money() end)
+	balance = tonumber(balance)
+	if not ok or balance == nil or balance ~= math.floor(balance) or balance < 0 or
+		balance > C.MAX_BALANCE then
+		return false, "deferred", "actor_money_unavailable"
+	end
+	local target = math.max(0, math.min(C.MAX_BALANCE, balance + delta))
+	local applied = target - balance
+	if applied == 0 and delta ~= 0 then
+		return false, "rejected", "money_balance_limit_reached"
+	end
+	context.money_change = { target = target, applied = applied }
+	return true
+end
+
+function impl.execute(context, params)
+	local change = context.money_change
+	if change == nil then
+		local allowed, status, reason = impl.can_execute(context, params)
+		if not allowed then return status, reason end
+		change = context.money_change
+	end
+	context.actor:give_money(change.applied)
+	local confirmed = tonumber(context.actor:money())
+	if confirmed ~= change.target then
+		return "uncertain", "money_change_not_confirmed"
+	end
+	return "executed", "money_changed_" .. tostring(change.applied) ..
+		"_balance_" .. tostring(change.target)
+end
+
+pf_donation_registry.register(ACTION_ID, {
+	source = "scripts\\pf_donation_action_change_money.script",
+	can_execute = impl.can_execute,
+	execute = impl.execute
+})
