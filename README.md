@@ -12,8 +12,6 @@ DonationAlerts запускает игровые эффекты в моде «Х
 
 При обновлении всегда заменяйте EXE и аддон вместе и полностью перезапускайте игру.
 
-## Исходный код и лицензия
-
-Проект распространяется как **source-available**, а не open source. Использование и изменение разрешены на условиях [MIT License с Commons Clause](LICENSE); продавать программу или основанный на ней сервис нельзя.
+## Исходный код 
 
 Сборка на Windows с .NET 8 SDK: `powershell -ExecutionPolicy Bypass -File .\build.ps1`. Проверки: `powershell -ExecutionPolicy Bypass -File .\test.ps1`.
